@@ -1,0 +1,36 @@
+# Local secrets and machine-specific configuration
+.env
+.env.*
+API/.env
+*.pem
+*.key
+
+# Personal canvas data and generated media
+assets/
+output/
+logs/
+history.json
+data/*
+!data/asset_library.json
+
+# Runtime caches and temporary files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+python/Lib/
+python/Scripts/
+python/Include/
+python/share/
+python/pyvenv.cfg
+*.tmp
+*.temp
+*.log
+_self_restart.*
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

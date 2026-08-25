@@ -5005,10 +5005,12 @@ def gpt_image_2_skill_executable():
     configured = str(codex_env_value("GPT_IMAGE_2_SKILL_BIN") or "").strip()
     if configured:
         return configured
+    bundled = os.path.join(BASE_DIR, "CLI", "windows", "openai", "bin", "gpt-image-2-skill.exe")
     return (
         shutil.which("gpt-image-2-skill")
         or shutil.which("gpt-image-2-skill.exe")
         or shutil.which("gpt-image-2-skill.cmd")
+        or (bundled if os.path.isfile(bundled) else "")
         or ""
     )
 
@@ -5549,11 +5551,52 @@ def gemini_cli_timeout(default=GEMINI_CLI_DEFAULT_TIMEOUT):
         return default
 
 def gemini_cli_image_timeout():
-    raw = os.getenv("ANTIGRAVITY_IMAGE_TIMEOUT") or os.getenv("GEMINI_CLI_IMAGE_TIMEOUT") or "300"
+    raw = gemini_cli_env_value("ANTIGRAVITY_IMAGE_TIMEOUT") or gemini_cli_env_value("GEMINI_CLI_IMAGE_TIMEOUT") or "300"
     try:
         return max(60, min(1800, int(raw)))
     except Exception:
         return 300
+
+def gemini_cli_image_status_text(raw):
+    if not isinstance(raw, dict):
+        return str(raw or "").strip()
+    parts = []
+    for key in ("text", "_stdout", "_stderr"):
+        value = str(raw.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return "\n".join(parts).strip()
+
+def gemini_cli_image_rate_limited(text):
+    lower = str(text or "").lower()
+    return any(token in lower for token in (
+        "antigravity_rate_limit",
+        "rate-limit",
+        "rate limit",
+        "too many requests",
+        "resource_exhausted",
+        "resource exhausted",
+        "quota exceeded",
+        "quota will reset",
+        "quota exhausted",
+        "cooldown",
+        "限流",
+        "配额已耗尽",
+        "配额耗尽",
+        "额度已耗尽",
+        "额度耗尽",
+        "冷却",
+    ))
+
+def gemini_cli_explicit_image_failure(text):
+    lower = str(text or "").lower()
+    return any(token in lower for token in (
+        "antigravity_image_failed",
+        "无法生成图片文件",
+        "unable to generate image file",
+        "cannot generate image file",
+        "could not generate image file",
+    ))
 
 def gemini_cli_model(model="", fallback=""):
     value = str(model or fallback or "").strip()
@@ -5716,7 +5759,9 @@ async def generate_gemini_cli_provider_image(prompt, size, model, reference_imag
             f"{ref_text}\n\n"
             f"如果当前 Antigravity CLI/模型支持图片生成或图片编辑，请把最终图片保存到这个本地目录：{OUTPUT_OUTPUT_DIR}\n"
             "文件格式优先 png 或 jpg。只输出最终文件路径和一句简短说明；不要修改项目代码，不要创建额外文档。\n"
-            "如果你无法真正创建图片文件，请在 60 秒内直接回复“无法生成图片文件”，不要只写计划，也不要持续尝试。"
+            "硬性规则：generate_image 工具最多调用一次。工具失败后禁止 sleep、禁止等待、禁止再次调用，也不要声称会稍后继续。\n"
+            "如果工具返回 429、RESOURCE_EXHAUSTED、rate limit、quota 或 cooldown，请直接回复“ANTIGRAVITY_RATE_LIMIT: ”并附上原始错误摘要。\n"
+            "如果因为其他原因无法真正创建图片文件，请直接回复“ANTIGRAVITY_IMAGE_FAILED: ”并附上具体原因，不要只写计划。"
         )
         raw = await run_gemini_cli(
             image_prompt,
@@ -5732,7 +5777,7 @@ async def generate_gemini_cli_provider_image(prompt, size, model, reference_imag
             if url and url not in urls:
                 urls.append(url)
         if not urls:
-            text = f"{raw.get('text') or raw.get('_stdout') or ''}\n{raw.get('_stderr') or ''}"
+            text = gemini_cli_image_status_text(raw)
             pattern = r"([A-Za-z]:\\[^\r\n\"'<>]+\.(?:png|jpe?g|webp|gif)|/[^\r\n\"'<>]+\.(?:png|jpe?g|webp|gif))"
             for match in re.findall(pattern, text, flags=re.I):
                 match_path = match.strip()
@@ -5741,7 +5786,26 @@ async def generate_gemini_cli_provider_image(prompt, size, model, reference_imag
                 if url and url not in urls:
                     urls.append(url)
         if not urls:
-            status_text = (raw.get("text") or raw.get("_stdout") or raw.get("_stderr") or "")[:1200]
+            status_text = gemini_cli_image_status_text(raw)[:1200]
+            if gemini_cli_image_rate_limited(status_text):
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "Antigravity 上游生图模型当前被限流（HTTP 429 / RESOURCE_EXHAUSTED），本次没有生成图片；"
+                        "这不是输出目录故障。请在 agy 交互终端运行 /usage 查看图片模型配额。"
+                        "如愿意消耗个人 AI Credits，可在 /config 中开启 Use G1 Credits；也可以切换到有可用额度的账号后重试。"
+                        f" CLI 返回：{status_text}"
+                    ),
+                )
+            if gemini_cli_explicit_image_failure(status_text):
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Antigravity CLI 已明确返回无法创建图片文件。请先在 agy 交互终端运行 /usage 检查图片模型额度，"
+                        "并确认 generate_image 工具可用；如果额度正常，再检查网络代理/TUN 是否保持开启。"
+                        f" CLI 返回：{status_text}"
+                    ),
+                )
             raise HTTPException(status_code=502, detail=f"{gemini_cli_display_name()} 已返回，但没有在输出目录发现图片：{status_text}")
         return {"type": "url", "value": urls[0]}, {"images": urls, "text": raw.get("text"), "provider": "gemini-cli", "raw": raw.get("raw")}
     finally:
