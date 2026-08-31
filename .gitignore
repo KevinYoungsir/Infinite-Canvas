@@ -2,6 +2,8 @@
 .env
 .env.*
 API/.env
+API/*auth*.json
+API/*credentials*.json
 *.pem
 *.key
 
@@ -11,7 +13,6 @@ output/
 logs/
 history.json
 data/*
-!data/asset_library.json
 
 # Runtime caches and temporary files
 __pycache__/

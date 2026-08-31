@@ -21,7 +21,7 @@
     <script src="/static/js/theme.js?v=2026.08.04.1785858497"></script>
     <script src="/static/js/i18n.js?v=2026.08.04.1785858497"></script>
     <link rel="stylesheet" href="/static/css/theme.css?v=2026.08.04.1785858497">
-    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.08.04.1785858497">
+    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.08.04.1787812333">
 </head>
 <body>
     <div class="page">
@@ -91,6 +91,7 @@
                                 </div>
                                 <div class="apimart-hint">
                                     <span class="ms-line">国内请求地址：<span class="inline-code">https://apib.ai</span></span>
+                                    <span class="ms-line">Midjourney 可加入生图模型列表；普通生图节点运行时会自动使用 APIMart 专用异步任务接口。</span>
                                 </div>
                                 <div class="volcengine-hint">
                                     <span class="ms-line">方舟默认请求地址：<span class="inline-code">https://ark.cn-beijing.volces.com/api/v3</span></span>
@@ -199,6 +200,49 @@
                                                 <input id="volcRegionInput" type="text" value="cn-beijing">
                                             </div>
                                         </div>
+                                    </div>
+                                    <div class="rh-key-item volcengine-project-card">
+                                        <div class="rh-key-head">
+                                            <div>
+                                                <div class="rh-key-title">TOS 公网素材 · 本地视频自动映射</div>
+                                                <div class="rh-key-desc">注册或在画布中 @ 本地素材时，先按“原文件名 + 大小 + ETag”匹配已有对象；未命中才上传，并保存本地素材 ID → TOS Object Key 的关系。</div>
+                                            </div>
+                                        </div>
+                                        <div class="volcengine-project-grid">
+                                            <label class="rh-card-title-field">
+                                                <span>Bucket（必填）</span>
+                                                <input id="volcTosBucketInput" type="text" placeholder="例如 apimart-reference-video">
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>TOS Region</span>
+                                                <input id="volcTosRegionInput" type="text" placeholder="例如 cn-guangzhou">
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>Endpoint（留空自动按 Region）</span>
+                                                <input id="volcTosEndpointInput" type="text" placeholder="tos-cn-beijing.volces.com">
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>对象前缀</span>
+                                                <input id="volcTosPrefixInput" type="text" value="infinite-canvas" placeholder="infinite-canvas（已有根目录对象仍会匹配）">
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>公网/CDN Base URL（可选）</span>
+                                                <input id="volcTosPublicBaseInput" type="url" placeholder="https://media.example.com">
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>访问方式</span>
+                                                <select id="volcTosAccessModeInput">
+                                                    <option value="public-read">对象公共读（稳定 URL）</option>
+                                                    <option value="signed">私有对象 + 预签名 URL</option>
+                                                </select>
+                                            </label>
+                                            <label class="rh-card-title-field">
+                                                <span>预签名有效期（秒）</span>
+                                                <input id="volcTosSignedExpiresInput" type="number" min="600" max="2592000" value="604800">
+                                            </label>
+                                        </div>
+                                        <label class="tos-checkbox-line"><input id="volcTosAutoMatchInput" type="checkbox" checked><span>优先匹配控制台中已经上传的同一文件（推荐）</span></label>
+                                        <div class="rh-key-desc">已有视频需要建立一次对应关系：点击素材详情里的“同步/匹配 TOS”，或直接“注册并等待审核”即可自动完成。请勿仅靠同名覆盖；内容不一致时会使用 SHA-256 新对象名。</div>
                                     </div>
                                 </div>
                                 <div class="ms-hint">
@@ -566,6 +610,6 @@
         </div>
     </div>
 
-    <script src="/static/js/api-settings.js?v=2026.08.04.1785858497"></script>
+    <script src="/static/js/api-settings.js?v=2026.08.04.1787814526"></script>
 </body>
 </html>

@@ -21,6 +21,14 @@ const volcSkInput = document.getElementById('volcSkInput');
 const volcAssetKeyHint = document.getElementById('volcAssetKeyHint');
 const volcProjectInput = document.getElementById('volcProjectInput');
 const volcRegionInput = document.getElementById('volcRegionInput');
+const volcTosBucketInput = document.getElementById('volcTosBucketInput');
+const volcTosRegionInput = document.getElementById('volcTosRegionInput');
+const volcTosEndpointInput = document.getElementById('volcTosEndpointInput');
+const volcTosPrefixInput = document.getElementById('volcTosPrefixInput');
+const volcTosPublicBaseInput = document.getElementById('volcTosPublicBaseInput');
+const volcTosAccessModeInput = document.getElementById('volcTosAccessModeInput');
+const volcTosSignedExpiresInput = document.getElementById('volcTosSignedExpiresInput');
+const volcTosAutoMatchInput = document.getElementById('volcTosAutoMatchInput');
 const jimengCliPanel = document.getElementById('jimengCliPanel');
 const jimengCliStatus = document.getElementById('jimengCliStatus');
 const jimengCredit = document.getElementById('jimengCredit');
@@ -71,6 +79,8 @@ const recommendApiList = document.getElementById('recommendApiList');
 const VOLCENGINE_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
 const VOLCENGINE_DEFAULT_PROJECT_NAME = 'default';
 const VOLCENGINE_DEFAULT_REGION = 'cn-beijing';
+const VOLCENGINE_TOS_DEFAULT_PREFIX = 'infinite-canvas';
+const VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES = 604800;
 const MS_BUILTIN_IMAGE_MODELS = [
     'Tongyi-MAI/Z-Image-Turbo',
     'Qwen/Qwen-Image-2512',
@@ -762,6 +772,11 @@ function applyProviderOnboardingDefaults(id){
         item.video_models = unique(item.video_models || []);
         item.volcengine_project_name = item.volcengine_project_name || VOLCENGINE_DEFAULT_PROJECT_NAME;
         item.volcengine_region = item.volcengine_region || VOLCENGINE_DEFAULT_REGION;
+        item.volcengine_tos_region = item.volcengine_tos_region || item.volcengine_region || VOLCENGINE_DEFAULT_REGION;
+        item.volcengine_tos_prefix = item.volcengine_tos_prefix ?? VOLCENGINE_TOS_DEFAULT_PREFIX;
+        item.volcengine_tos_access_mode = item.volcengine_tos_access_mode || 'public-read';
+        item.volcengine_tos_signed_expires = Number(item.volcengine_tos_signed_expires || VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES);
+        item.volcengine_tos_auto_match = item.volcengine_tos_auto_match !== false;
     } else if(id === 'lingjing'){
         item.base_url = item.base_url || LINGJING_DEFAULT_BASE_URL;
         item.protocol = item.protocol || 'openai';
@@ -842,6 +857,14 @@ function syncEditor(){
         if(sk) item.volcengine_secret_access_key = sk;
         item.volcengine_project_name = (volcProjectInput?.value.trim() || VOLCENGINE_DEFAULT_PROJECT_NAME);
         item.volcengine_region = (volcRegionInput?.value.trim() || VOLCENGINE_DEFAULT_REGION);
+        item.volcengine_tos_bucket = volcTosBucketInput?.value.trim() || '';
+        item.volcengine_tos_region = volcTosRegionInput?.value.trim() || item.volcengine_region || VOLCENGINE_DEFAULT_REGION;
+        item.volcengine_tos_endpoint = volcTosEndpointInput?.value.trim() || '';
+        item.volcengine_tos_prefix = volcTosPrefixInput?.value.trim() ?? VOLCENGINE_TOS_DEFAULT_PREFIX;
+        item.volcengine_tos_public_base_url = volcTosPublicBaseInput?.value.trim() || '';
+        item.volcengine_tos_access_mode = volcTosAccessModeInput?.value || 'public-read';
+        item.volcengine_tos_signed_expires = Math.max(600, Math.min(2592000, Number(volcTosSignedExpiresInput?.value || VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES)));
+        item.volcengine_tos_auto_match = volcTosAutoMatchInput?.checked !== false;
     }
 }
 function ensureRunningHubLists(item){
@@ -2568,6 +2591,14 @@ function renderEditor(){
         if(volcAssetKeyHint) volcAssetKeyHint.textContent = volcengineAssetKeyHintText(item);
         if(volcProjectInput) volcProjectInput.value = item.volcengine_project_name || VOLCENGINE_DEFAULT_PROJECT_NAME;
         if(volcRegionInput) volcRegionInput.value = item.volcengine_region || VOLCENGINE_DEFAULT_REGION;
+        if(volcTosBucketInput) volcTosBucketInput.value = item.volcengine_tos_bucket || '';
+        if(volcTosRegionInput) volcTosRegionInput.value = item.volcengine_tos_region || item.volcengine_region || VOLCENGINE_DEFAULT_REGION;
+        if(volcTosEndpointInput) volcTosEndpointInput.value = item.volcengine_tos_endpoint || '';
+        if(volcTosPrefixInput) volcTosPrefixInput.value = item.volcengine_tos_prefix ?? VOLCENGINE_TOS_DEFAULT_PREFIX;
+        if(volcTosPublicBaseInput) volcTosPublicBaseInput.value = item.volcengine_tos_public_base_url || '';
+        if(volcTosAccessModeInput) volcTosAccessModeInput.value = item.volcengine_tos_access_mode || 'public-read';
+        if(volcTosSignedExpiresInput) volcTosSignedExpiresInput.value = Number(item.volcengine_tos_signed_expires || VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES);
+        if(volcTosAutoMatchInput) volcTosAutoMatchInput.checked = item.volcengine_tos_auto_match !== false;
     }
     if(isJimeng){
         item.base_url = '';
@@ -3119,12 +3150,7 @@ async function testConnection(){
             // "验证地址" only checks reachability. Protocol and image-interface
             // selection are intentionally left untouched for this action.
             // 存入 picker 状态并启用「选择模型」按钮，但不自动弹出
-            lastFetchedAll = data.all || [];
-            lastFetchedSuggestion = {
-                image: new Set(data.image_models || []),
-                chat: new Set(data.chat_models || []),
-                video: new Set(data.video_models || []),
-            };
+            setFetchedModelState(data);
             const openBtn = document.getElementById('openPickerBtn');
             if(openBtn){ openBtn.disabled = false; openBtn.style.opacity = '1'; }
             const isRunningHubNow = runninghubContext || detectedProtocol === 'runninghub';
@@ -3139,7 +3165,10 @@ async function testConnection(){
             const runninghubNote = isRunningHubNow
                 ? ` · RunningHub OpenAPI${runninghubModelSourceNote(data)}`
                 : imageModeNote;
-            showVerifyResult(`<span style="color:#15803d;font-size:11px;font-weight:800">✓ 地址验证通过 · 找到 ${data.model_count} 个模型${runninghubNote}</span>${volcengineNote}${jimengNote}${codexNote}${geminiCliNote}`);
+            const midjourneyNote = lastFetchedMidjourneyModels.length
+                ? `<div style="margin-top:6px;color:#15803d;font-size:11px;font-weight:700">已识别 Midjourney 生图模型；可导入生图列表，画布运行时会自动使用 APIMart 专用异步任务接口。</div>`
+                : '';
+            showVerifyResult(`<span style="color:#15803d;font-size:11px;font-weight:800">✓ 地址验证通过 · 找到 ${data.model_count} 个模型${runninghubNote}</span>${volcengineNote}${jimengNote}${codexNote}${geminiCliNote}${midjourneyNote}`);
         } else {
             showVerifyResult(`
                 <div style="font-size:11px;font-weight:800;color:#b45309">⚠ 地址验证未通过 (HTTP ${data.status})</div>
@@ -3154,9 +3183,17 @@ async function testConnection(){
 let lastFetchedAll = [];          // 全部模型 id 列表
 let lastFetchedSuggestion = null; // 后端自动分类建议
 let lastFetchedModelNames = {};   // {模型 id: 展示名}
+let lastFetchedMidjourneyModels = []; // 仍归入 image，运行时由后端桥接专用任务协议
+
+function isDedicatedMidjourneyModel(model){
+    const value = String(model || '').trim().toLowerCase();
+    return value === 'midjourney' || value.startsWith('midjourney@') || value.startsWith('midjourney-') || value.startsWith('midjourney/');
+}
 
 function setFetchedModelState(data){
-    lastFetchedAll = Array.isArray(data?.all) ? data.all : [];
+    const all = Array.isArray(data?.all) ? data.all : [];
+    lastFetchedMidjourneyModels = all.filter(isDedicatedMidjourneyModel);
+    lastFetchedAll = all;
     lastFetchedSuggestion = {
         image: new Set(data?.image_models || []),
         chat: new Set(data?.chat_models || []),
@@ -3283,7 +3320,8 @@ async function fetchModels(){
             ? ` · RunningHub OpenAPI${runninghubModelSourceNote(data)}`
             : (detectedProtocol === 'volcengine' || isVolcengineProvider(item)) ? ' · 已识别方舟协议，火山聊天建议改填 ep-... 接入点' : '';
         const imageModeExtra = normalizeImageRequestMode(imageRequestModeInput?.value || item.image_request_mode) === 'openai-json' ? ' · 图片接口已设为 OpenAI JSON' : '';
-        setStatus(`已拉取 ${data.total} 个模型 · 点「选择模型」勾选要导入的${extra}${imageModeExtra}`);
+        const midjourneyExtra = lastFetchedMidjourneyModels.length ? ' · Midjourney 已归入生图模型，运行时自动使用专用任务接口' : '';
+        setStatus(`已拉取 ${data.total} 个模型 · 点「选择模型」勾选要导入的${extra}${imageModeExtra}${midjourneyExtra}`);
         openModelPicker();
     } catch(e){
         alert('拉取失败：' + (e.message || e));
@@ -3300,7 +3338,11 @@ let pickerVisibleIds = [];
 function openModelPicker(){
     const item = provider();
     if(!item || !lastFetchedAll.length){ alert('没有拉取到模型'); return; }
-    const existing = { image: new Set(item.image_models||[]), chat: new Set(item.chat_models||[]), video: new Set(item.video_models||[]) };
+    const existing = {
+        image: new Set(item.image_models||[]),
+        chat: new Set(item.chat_models||[]),
+        video: new Set(item.video_models||[]),
+    };
     const allIds = new Set([...lastFetchedAll, ...(item.image_models||[]), ...(item.chat_models||[]), ...(item.video_models||[])]);
     pickerState = { category: {}, selected: {} };
     allIds.forEach(id => {
@@ -3836,6 +3878,14 @@ async function saveProviders(){
                 rh_workflows:item.id === 'runninghub' ? (item.rh_workflows || []) : [],
                 volcengine_project_name:item.id === 'volcengine' ? (item.volcengine_project_name || VOLCENGINE_DEFAULT_PROJECT_NAME) : '',
                 volcengine_region:item.id === 'volcengine' ? (item.volcengine_region || VOLCENGINE_DEFAULT_REGION) : '',
+                volcengine_tos_bucket:item.id === 'volcengine' ? (item.volcengine_tos_bucket || '') : '',
+                volcengine_tos_region:item.id === 'volcengine' ? (item.volcengine_tos_region || item.volcengine_region || VOLCENGINE_DEFAULT_REGION) : '',
+                volcengine_tos_endpoint:item.id === 'volcengine' ? (item.volcengine_tos_endpoint || '') : '',
+                volcengine_tos_prefix:item.id === 'volcengine' ? (item.volcengine_tos_prefix ?? VOLCENGINE_TOS_DEFAULT_PREFIX) : '',
+                volcengine_tos_public_base_url:item.id === 'volcengine' ? (item.volcengine_tos_public_base_url || '') : '',
+                volcengine_tos_access_mode:item.id === 'volcengine' ? (item.volcengine_tos_access_mode || 'public-read') : 'public-read',
+                volcengine_tos_signed_expires:item.id === 'volcengine' ? Number(item.volcengine_tos_signed_expires || VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES) : VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES,
+                volcengine_tos_auto_match:item.id === 'volcengine' ? item.volcengine_tos_auto_match !== false : true,
                 volcengine_access_key_id:item.volcengine_access_key_id || undefined,
                 volcengine_secret_access_key:item.volcengine_secret_access_key || undefined,
                 api_key:item.api_key || undefined,

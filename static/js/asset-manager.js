@@ -31,6 +31,8 @@ let promptLibrary = {libraries:[]};
 let apiProviders = [];
 let avatarRegisterProvider = '';
 let avatarBusyId = '';
+let avatarLastError = {itemId:'', message:''};
+let tosBusyId = '';
 let activeAssetLibraryId = '';
 let activeAssetCategoryId = '';
 let activeAssetClassFilter = '';
@@ -2231,6 +2233,9 @@ function renderAvatarRegistrationCard(item, platform, reg, busy){
 }
 function renderAvatarSection(item){
     const busy = avatarBusyId === item.id;
+    const lastError = avatarLastError.itemId === item.id && avatarLastError.message
+        ? `<div class="avatar-hint warn"><strong>提交失败：</strong>${escapeHtml(avatarLastError.message)}</div>`
+        : '';
     const regs = (item.registrations && typeof item.registrations === 'object') ? item.registrations : {};
     const cards = Object.keys(regs)
         .filter(platform => regs[platform] && regs[platform].task_id)
@@ -2240,6 +2245,7 @@ function renderAvatarSection(item){
     if(!providers.length){
         return `<div class="avatar-section">
             ${cards}
+            ${lastError}
             <div class="avatar-head"><i data-lucide="user-round-cog"></i><span>注册为真人/数字人</span></div>
             <div class="avatar-hint">未检测到可用平台。请先在「API 平台管理」中添加并启用 API 平台（如 APIMart）并填写 Key。</div>
         </div>`;
@@ -2263,8 +2269,32 @@ function renderAvatarSection(item){
     }
     return `<div class="avatar-section">
         ${cards}
+        ${lastError}
         <div class="avatar-head"><i data-lucide="user-round-cog"></i><span>注册到平台</span></div>
         ${registerUI}
+    </div>`;
+}
+function renderTosSection(item){
+    const kind = assetKind(item);
+    if(!['image','video','audio'].includes(kind)) return '';
+    const volc = (apiProviders || []).find(provider => provider?.id === 'volcengine');
+    const configured = Boolean(volc?.volcengine_tos_bucket);
+    const tos = (item.remote_sources && typeof item.remote_sources === 'object' && item.remote_sources.tos && typeof item.remote_sources.tos === 'object') ? item.remote_sources.tos : null;
+    const busy = tosBusyId === item.id;
+    const state = tos
+        ? `<div class="avatar-card registered">
+            <div class="avatar-head"><i data-lucide="cloud-check"></i><span>TOS 已关联</span><span class="avatar-platform-tag">${tos.matched_existing ? '匹配已有对象' : '画布自动上传'}</span></div>
+            <div class="avatar-hint">${escapeHtml(tos.bucket || '')} / ${escapeHtml(tos.object_key || '')}</div>
+            <div class="avatar-uri">${escapeHtml(tos.url || '')}</div>
+            <div class="asset-tools">
+                <button class="asset-btn" type="button" data-tos-copy="${escapeAttr(tos.url || '')}"><i data-lucide="copy"></i><span>复制公网地址</span></button>
+            </div>
+        </div>`
+        : `<div class="avatar-hint">${configured ? '尚未建立对应关系。同步时会先精确匹配 TOS 中已有文件，未命中才自动上传。' : '尚未配置 TOS Bucket，请先在“API 平台管理 → 火山引擎 → TOS 公网素材”中填写。'}</div>`;
+    return `<div class="avatar-section">
+        <div class="avatar-head"><i data-lucide="cloud"></i><span>TOS 公网素材</span></div>
+        ${state}
+        <button class="asset-btn primary" type="button" data-tos-sync="${escapeAttr(item.id)}" ${busy || !configured ? 'disabled' : ''}><i data-lucide="cloud-upload"></i><span>${busy ? '正在同步…' : (tos ? '同步并刷新公网地址' : '同步/匹配 TOS')}</span></button>
     </div>`;
 }
 function renderAssetDetail(item){
@@ -2316,6 +2346,7 @@ function renderAssetDetail(item){
                     <div class="detail-caption-head"><strong>智能分类</strong></div>
                     <div class="detail-classification-body">${renderClassificationChips(item, 32, {kind:'asset', libraryId:activeAssetLibraryId}) || '<span class="classification-empty">暂无智能分类，可以选中图片后点击“智能分类”。</span>'}</div>
                 </div>` : ''}
+                ${renderTosSection(item)}
                 ${renderAvatarSection(item)}
             </div>
         </div>
@@ -3593,6 +3624,15 @@ async function handleClick(event){
         setStatus(ok ? '已复制 asset:// 地址' : `复制失败，请手动复制：${uri}`);
         return;
     }
+    const tosCopy = target.closest?.('[data-tos-copy]');
+    if(tosCopy){
+        const url = tosCopy.dataset.tosCopy || '';
+        const ok = await copyTextToClipboard(url);
+        setStatus(ok ? '已复制 TOS 公网地址' : `复制失败，请手动复制：${url}`);
+        return;
+    }
+    const tosSync = target.closest?.('[data-tos-sync]');
+    if(tosSync){ await syncAssetToTos(tosSync.dataset.tosSync || ''); return; }
     const avatarRegister = target.closest?.('[data-avatar-register]');
     if(avatarRegister){ await registerAssetAvatar(avatarRegister.dataset.avatarRegister || '', avatarRegister.dataset.avatarProv || ''); return; }
     const avatarCheck = target.closest?.('[data-avatar-check]');
@@ -4186,6 +4226,7 @@ async function registerAssetAvatar(id, providerId=''){
     if(!providerAvatarSupported(provider)){ setStatus(`「${avatarPlatformLabel(providerAvatarPlatform(provider))}」的资产认证 API 尚未接入`); return; }
     if(avatarBusyId) return;
     avatarBusyId = id;
+    avatarLastError = {itemId:'', message:''};
     selectedAssetId = id;
     render();
     setStatus(`正在上传素材并提交 ${avatarPlatformLabel(providerAvatarPlatform(provider))} 审核…`);
@@ -4196,12 +4237,37 @@ async function registerAssetAvatar(id, providerId=''){
             body:JSON.stringify({library_id:activeAssetLibraryId, provider_id:provider.id})
         });
         assetLibrary = data.library || assetLibrary;
+        avatarLastError = {itemId:'', message:''};
         setStatus(`已提交审核，正在等待 ${avatarPlatformLabel(providerAvatarPlatform(provider))} 通过…`);
         scheduleAvatarPoll(id, provider.id);
     } catch(err) {
-        setStatus(err.message || '数字人提交失败');
+        const message = err.message || '数字人提交失败';
+        avatarLastError = {itemId:id, message};
+        setStatus(message);
     } finally {
         avatarBusyId = '';
+        render();
+    }
+}
+async function syncAssetToTos(id){
+    const item = findAssetItem(id);
+    if(!item || tosBusyId) return;
+    tosBusyId = id;
+    selectedAssetId = id;
+    render();
+    setStatus('正在匹配 TOS 已有对象；未命中时将自动上传…');
+    try {
+        const data = await apiJson(`/api/asset-library/items/${encodeURIComponent(id)}/tos-sync`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({library_id:activeAssetLibraryId, provider_id:'volcengine'})
+        });
+        assetLibrary = data.library || assetLibrary;
+        setStatus('TOS 对应关系已建立，APIMart 和火山审核将自动使用该公网地址');
+    } catch(err) {
+        setStatus(err.message || 'TOS 同步失败');
+    } finally {
+        tosBusyId = '';
         render();
     }
 }

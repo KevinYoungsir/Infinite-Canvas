@@ -8755,8 +8755,9 @@ function renderVideoBody(node){
                         <option value="">Auto</option>
                         <option value="480p">480p</option>
                         <option value="720p">720p</option>
+                        <option value="768P">768P</option>
                         <option value="1080p">1080p</option>
-                        <option value="780P">780P</option>
+                        <option value="2K">2K</option>
                     </select>
                 </label>
             </div>

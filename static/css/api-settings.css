@@ -417,8 +417,12 @@ body.studio-theme-dark .rh-config-card { background:var(--soft); border-color:va
 .rh-card-title-field span { color:var(--faint); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 .rh-card-main input,.rh-card-main textarea { width:100%; border:1px solid var(--line); border-radius:9px; background:var(--soft); color:var(--text); outline:none; padding:0 9px; font-size:12px; font-weight:700; }
 .rh-card-main input { height:30px; }
-.rh-card-title-field input { background:var(--panel); border-color:var(--line-strong); font-size:13px; font-weight:900; }
-.rh-card-title-field input:focus { border-color:var(--text); box-shadow:0 0 0 2px rgba(15,23,42,.08); }
+.rh-card-title-field input,
+.rh-card-title-field select { background:var(--panel); border:1px solid var(--line-strong); border-radius:10px; color:var(--text); min-height:38px; padding:0 10px; font-size:13px; font-weight:900; }
+.rh-card-title-field input:focus,
+.rh-card-title-field select:focus { border-color:var(--text); box-shadow:0 0 0 2px rgba(15,23,42,.08); outline:none; }
+.tos-checkbox-line { display:flex; align-items:center; gap:9px; color:var(--text); font-size:12px; font-weight:800; }
+.tos-checkbox-line input { width:16px; height:16px; accent-color:var(--text); }
 .rh-card-main textarea { min-height:48px; padding:7px 9px; resize:vertical; line-height:1.35; font-family:inherit; }
 body.studio-theme-dark .rh-card-main input, body.studio-theme-dark .rh-card-main textarea { background:var(--panel); border-color:var(--line-strong); }
 .rh-id-line { display:flex; align-items:center; gap:6px; color:var(--faint); font-size:10.5px; font-weight:800; font-family:ui-monospace,Menlo,monospace; min-width:0; }

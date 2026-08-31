@@ -2689,7 +2689,7 @@ function renderVideoAspectControl(){
     </div>`;
 }
 function renderVideoResolutionControl(){
-    const options = [['', tr('smart.videoResAuto')], ['480p','480P'], ['720p','720P'], ['1080p','1080P']];
+    const options = [['', tr('smart.videoResAuto')], ['480p','480P'], ['720p','720P'], ['768P','768P'], ['1080p','1080P'], ['2K','2K']];
     const value = settings.videoResolution || '';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control resolution-control">
@@ -16126,11 +16126,20 @@ async function runGeneration(){
             return;
         }
         if(isApiLikeEngine(settings.engine) && settings.apiKind === 'video'){
-            const outVideos = await runApiVideoGeneration(prompt, refs);
-            if(!outVideos.length) throw new Error(tr('smart.errNoOutVideos'));
-            finalizePendingNode(pendingNode, outVideos, pendingMeta, 'video');
+            const videoTask = await submitApiVideoGeneration(prompt, refs);
+            pendingNode.pendingTasks = [{
+                taskId:videoTask.taskId,
+                kind:'video',
+                providerId:videoTask.providerId,
+                model:videoTask.model
+            }];
+            pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0) || 1);
+            pendingNode.running = false;
+            render();
+            scheduleSave();
+            await saveCanvas();
+            await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart});
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            addSmartGenerationLog({run:runLog, outputs:outVideos, runMs:nowMs() - runLogStart});
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;
             scheduleSave();
@@ -16362,7 +16371,7 @@ async function runRunningHubGeneration(prompt, refs, runSettings=settings){
     }
     throw new Error(tr('smart.rhTimeout'));
 }
-async function runApiVideoGeneration(prompt, refs, runSettings=settings){
+async function submitApiVideoGeneration(prompt, refs, runSettings=settings){
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
     try {
         const uploadedRefs = applyUploadedUrlsToSmartRefs(refs, runSettings);
@@ -16411,16 +16420,27 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             multimodal: Boolean(runSettings.videoMultimodal),
             trusted_asset: useAssetUris
         };
-        const result = await fetch('/api/canvas-video', {
+        const result = await fetch('/api/canvas-video-tasks', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify(payload)
         }).then(async r => { if(!r.ok) throw new Error(await smartResponseErrorMessage(r, tr('smart.errRunFailed'))); return r.json(); });
-        if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
-        return resultMediaUrls(result);
+        if(!result?.task_id) throw new Error(tr('smart.errRunFailed'));
+        return {
+            taskId:result.task_id,
+            kind:'video',
+            providerId:payload.provider_id,
+            model:payload.model
+        };
     } finally {
         transientSmartCloudLinks = [];
     }
+}
+async function runApiVideoGeneration(prompt, refs, runSettings=settings){
+    const task = await submitApiVideoGeneration(prompt, refs, runSettings);
+    const result = await pollSmartCanvasTask(task.taskId, 'video');
+    if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
+    return resultMediaUrls(result);
 }
 async function runModelscopeGeneration(prompt, refs, runSettings=settings){
     refs = imageRefsOnly(refs);
@@ -16995,6 +17015,16 @@ async function fetchImageTaskQuery(providerId, taskId){
         return r.json();
     });
 }
+async function fetchVideoTaskQuery(providerId, taskId){
+    return fetch('/api/video-task-query', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({provider_id:providerId || 'comfly', task_id:taskId})
+    }).then(async r => {
+        if(!r.ok) throw new Error(await r.text());
+        return r.json();
+    });
+}
 async function querySmartImageTaskNow(nodeId, localTaskId){
     const node = nodes.find(n => n.id === nodeId);
     if(!node) return;
@@ -17009,7 +17039,9 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     task.recoverTaskId = recoverTaskId;
     render();
     try {
-        const data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
+        const data = task.kind === 'video'
+            ? await fetchVideoTaskQuery(providerIdForSmartTask(node, task), recoverTaskId)
+            : await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
         if(data.status === 'succeeded'){
             task.failed = false;
             task.querying = false;
@@ -17068,13 +17100,14 @@ function resumeJimengPendingNodes(){
         startJimengPoll(n);
     });
 }
-async function pollSmartCanvasTask(taskId){
+async function pollSmartCanvasTask(taskId, kind='image'){
     if(!taskId) throw new Error(tr('smart.errRunFailed'));
     if(activeSmartTaskPolls.has(taskId)) return activeSmartTaskPolls.get(taskId);
     const promise = (async () => {
         for(let i = 0; i < 900; i++){
             await new Promise(resolve => setTimeout(resolve, 2000));
-            const task = await fetch(`/api/canvas-image-tasks/${encodeURIComponent(taskId)}`).then(async r => {
+            const endpoint = kind === 'video' ? '/api/canvas-video-tasks/' : '/api/canvas-image-tasks/';
+            const task = await fetch(`${endpoint}${encodeURIComponent(taskId)}`).then(async r => {
                 if(!r.ok) throw new Error(await r.text());
                 return r.json();
             });
@@ -17082,7 +17115,7 @@ async function pollSmartCanvasTask(taskId){
             if(task.status === 'jimeng_pending') throw new JimengPendingSignal({submitId:task.submit_id, kind:task.kind, queueInfo:task.queue_info, message:task.message});
             if(task.status === 'failed'){
                 const recoverTaskId = task.upstream_task_id || extractUpstreamTaskId(task.error || '');
-                if(recoverTaskId) throw new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind:'image', message:task.error || tr('smart.errRunFailed')});
+                if(recoverTaskId) throw new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind, message:task.error || tr('smart.errRunFailed')});
                 throw new Error(task.error || tr('smart.errRunFailed'));
             }
         }
@@ -17149,7 +17182,7 @@ async function resumeSmartPendingNode(node, logContext={}){
     await Promise.all(tasks.map(async task => {
         if(task.failed && task.recoverTaskId) return;
         try {
-            const result = await pollSmartCanvasTask(task.taskId);
+            const result = await pollSmartCanvasTask(task.taskId, task.kind || 'image');
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result)), task.kind || 'image');
             render();
             scheduleSave();

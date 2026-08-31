@@ -27,6 +27,7 @@ import shlex
 import functools
 import html
 import xml.etree.ElementTree as ET
+from contextvars import ContextVar
 from typing import List, Dict, Any, Optional, Tuple
 from threading import Lock, Thread
 import httpx
@@ -240,6 +241,7 @@ PROMPT_LIBRARY_PATH = os.path.join(DATA_DIR, "prompt_libraries.json")
 API_PROVIDERS_FILE = os.path.join(DATA_DIR, "api_providers.json")
 RUNNINGHUB_WORKFLOW_STORE_FILE = os.path.join(DATA_DIR, "runninghub_workflows.json")
 SHARED_FOLDERS_FILE = os.path.join(DATA_DIR, "shared_folders.json")
+CANVAS_VIDEO_TASKS_FILE = os.path.join(DATA_DIR, "canvas_video_tasks.json")
 GLOBAL_CONFIG_FILE = os.path.join(BASE_DIR, "global_config.json")
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv("LOCAL_IMAGE_IMPORT_MAX_BYTES", str(50 * 1024 * 1024)))
@@ -379,6 +381,9 @@ except Exception:
 VOLCENGINE_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 VOLCENGINE_DEFAULT_PROJECT_NAME = "default"
 VOLCENGINE_DEFAULT_REGION = "cn-beijing"
+VOLCENGINE_TOS_DEFAULT_PREFIX = "infinite-canvas"
+VOLCENGINE_TOS_DEFAULT_ACCESS_MODE = "public-read"
+VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES = 7 * 24 * 60 * 60
 RUNNINGHUB_DEFAULT_IMAGE_MODELS = [
     "gpt-image-2.0/text-to-image-channel-low-price",
     "gpt-image-2.0/edit-channel-low-price",
@@ -836,6 +841,14 @@ def default_api_providers():
             "ms_defaults_version": 0,
             "volcengine_project_name": VOLCENGINE_DEFAULT_PROJECT_NAME,
             "volcengine_region": VOLCENGINE_DEFAULT_REGION,
+            "volcengine_tos_bucket": "",
+            "volcengine_tos_region": "",
+            "volcengine_tos_endpoint": "",
+            "volcengine_tos_prefix": VOLCENGINE_TOS_DEFAULT_PREFIX,
+            "volcengine_tos_public_base_url": "",
+            "volcengine_tos_access_mode": VOLCENGINE_TOS_DEFAULT_ACCESS_MODE,
+            "volcengine_tos_signed_expires": VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES,
+            "volcengine_tos_auto_match": True,
         },
     ]
 
@@ -900,6 +913,11 @@ def merge_default_api_providers(providers, inject_missing=True):
             current["protocol"] = "volcengine"
             current["volcengine_project_name"] = str(current.get("volcengine_project_name") or VOLCENGINE_DEFAULT_PROJECT_NAME).strip() or VOLCENGINE_DEFAULT_PROJECT_NAME
             current["volcengine_region"] = str(current.get("volcengine_region") or VOLCENGINE_DEFAULT_REGION).strip() or VOLCENGINE_DEFAULT_REGION
+            current["volcengine_tos_prefix"] = str(current.get("volcengine_tos_prefix") or VOLCENGINE_TOS_DEFAULT_PREFIX).strip().strip("/")
+            current["volcengine_tos_region"] = str(current.get("volcengine_tos_region") or current.get("volcengine_region") or VOLCENGINE_DEFAULT_REGION).strip()
+            current["volcengine_tos_access_mode"] = str(current.get("volcengine_tos_access_mode") or VOLCENGINE_TOS_DEFAULT_ACCESS_MODE).strip().lower()
+            current["volcengine_tos_signed_expires"] = int(current.get("volcengine_tos_signed_expires") or VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES)
+            current["volcengine_tos_auto_match"] = current.get("volcengine_tos_auto_match") is not False
     # 即梦 CLI 不再是强制保留的默认平台：仅在用户已添加了即梦协议的平台时，规范化其默认模型/地址。
     for current in merged:
         if not is_jimeng_provider(current):
@@ -1260,6 +1278,81 @@ def runninghub_openapi_url(provider, path=""):
     base = runninghub_openapi_base_url(provider)
     return f"{base}/{path}" if path else base
 
+def is_seedance_video_model(model_id):
+    """Seedance is always a video model, including APIMart's seedance-* IDs."""
+    return "seedance" in str(model_id or "").strip().lower()
+
+def is_midjourney_task_model(model_id):
+    """APIMart Midjourney uses dedicated async task endpoints, not OpenAI images."""
+    value = str(model_id or "").strip().lower()
+    return value == "midjourney" or value.startswith(("midjourney@", "midjourney-", "midjourney/"))
+
+APIMART_VIDEO_MODEL_PREFIXES = (
+    "minimax-h3",
+    "omni-flash-ext",
+    "gemini-omni-flash-preview",
+    "happyhorse-",
+    "pixverse-",
+    "skyreels-",
+    "viduq3",
+)
+
+def apimart_model_category(model_id):
+    """Return APIMart fallback overrides when expanded model metadata is unavailable."""
+    value = str(model_id or "").strip().lower()
+    if not value:
+        return ""
+    # This moderation ID used to match the overly broad generic "stable" image rule.
+    if value == "text-moderation-stable":
+        return "chat"
+    if is_midjourney_task_model(value):
+        return "image"
+    if is_seedance_video_model(value):
+        return "video"
+    # Wan image and Grok image IDs otherwise collide with their video-family names.
+    if value.startswith("wan2.7-image"):
+        return "image"
+    if value.startswith("grok-imagine"):
+        return "video" if "video" in value else "image"
+    if value.startswith(APIMART_VIDEO_MODEL_PREFIXES):
+        return "video"
+    return ""
+
+def normalize_provider_model_categories(image_values, chat_values, video_values, protocol=""):
+    """Repair known category mistakes while keeping canvas-selectable models."""
+    image_models = model_list_from_values(image_values or [])
+    chat_models = model_list_from_values(chat_values or [])
+    video_models = model_list_from_values(video_values or [])
+    misplaced_seedance = [
+        model for model in [*image_models, *chat_models]
+        if is_seedance_video_model(model)
+    ]
+    if misplaced_seedance:
+        image_models = [model for model in image_models if not is_seedance_video_model(model)]
+        chat_models = [model for model in chat_models if not is_seedance_video_model(model)]
+        video_models = model_list_from_values([*video_models, *misplaced_seedance])
+    midjourney_models = [
+        model for model in [*image_models, *chat_models, *video_models]
+        if is_midjourney_task_model(model)
+    ]
+    if midjourney_models:
+        image_models = model_list_from_values([*image_models, *midjourney_models])
+        chat_models = [model for model in chat_models if not is_midjourney_task_model(model)]
+        video_models = [model for model in video_models if not is_midjourney_task_model(model)]
+    if str(protocol or "").strip().lower() == "apimart":
+        buckets = {"image": image_models, "chat": chat_models, "video": video_models}
+        # Move only known APIMart exceptions. Unknown/custom IDs retain the user's choice.
+        for model in [*image_models, *chat_models, *video_models]:
+            target = apimart_model_category(model)
+            if not target:
+                continue
+            for category, values in buckets.items():
+                if category != target:
+                    values[:] = [item for item in values if item != model]
+            if model not in buckets[target]:
+                buckets[target].append(model)
+    return image_models, chat_models, video_models
+
 def normalize_provider(item):
     provider_id = str(item.get("id") or "").strip().lower()
     if not PROVIDER_ID_RE.fullmatch(provider_id):
@@ -1278,11 +1371,36 @@ def normalize_provider(item):
     image_edit_endpoint = normalize_endpoint_override(item.get("image_edit_endpoint"), "图生图/编辑端口")
     volc_project = re.sub(r"\s+", " ", str(item.get("volcengine_project_name") or "").strip())[:80]
     volc_region = re.sub(r"\s+", " ", str(item.get("volcengine_region") or "").strip())[:40]
+    tos_bucket = str(item.get("volcengine_tos_bucket") or "").strip().lower()[:128]
+    tos_region = re.sub(r"\s+", "", str(item.get("volcengine_tos_region") or volc_region or VOLCENGINE_DEFAULT_REGION).strip())[:40]
+    tos_endpoint = str(item.get("volcengine_tos_endpoint") or "").strip().rstrip("/")[:240]
+    tos_prefix = str(item.get("volcengine_tos_prefix") or VOLCENGINE_TOS_DEFAULT_PREFIX).strip().replace("\\", "/").strip("/")[:240]
+    tos_public_base = str(item.get("volcengine_tos_public_base_url") or "").strip().rstrip("/")[:500]
+    tos_access_mode = str(item.get("volcengine_tos_access_mode") or VOLCENGINE_TOS_DEFAULT_ACCESS_MODE).strip().lower()
+    try:
+        tos_signed_expires = int(item.get("volcengine_tos_signed_expires") or VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES)
+    except (TypeError, ValueError):
+        tos_signed_expires = VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES
+    tos_signed_expires = max(600, min(tos_signed_expires, 30 * 24 * 60 * 60))
+    tos_auto_match = item.get("volcengine_tos_auto_match") is not False
     if provider_id == "volcengine":
         protocol = "volcengine"
         base_url = base_url or VOLCENGINE_DEFAULT_BASE_URL
         volc_project = volc_project or VOLCENGINE_DEFAULT_PROJECT_NAME
         volc_region = volc_region or VOLCENGINE_DEFAULT_REGION
+        if tos_bucket and not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,126}[a-z0-9]", tos_bucket):
+            raise HTTPException(status_code=400, detail="TOS Bucket 名称不合法")
+        if tos_endpoint:
+            parsed_tos_endpoint = urllib.parse.urlsplit(tos_endpoint if "://" in tos_endpoint else f"https://{tos_endpoint}")
+            tos_endpoint = str(parsed_tos_endpoint.hostname or "").strip().lower()
+            if not tos_endpoint:
+                raise HTTPException(status_code=400, detail="TOS Endpoint 不合法")
+        if tos_prefix and any(part in {".", ".."} for part in tos_prefix.split("/")):
+            raise HTTPException(status_code=400, detail="TOS 对象前缀不能包含 . 或 .. 路径段")
+        if tos_public_base and not re.match(r"^https://", tos_public_base, re.I):
+            raise HTTPException(status_code=400, detail="TOS 公网/CDN 地址必须以 https:// 开头")
+        if tos_access_mode not in {"public-read", "signed"}:
+            tos_access_mode = VOLCENGINE_TOS_DEFAULT_ACCESS_MODE
     if provider_id == "jimeng" or protocol == "jimeng":
         protocol = "jimeng"
         base_url = ""
@@ -1295,7 +1413,12 @@ def normalize_provider(item):
     if locked_rule:
         protocol = locked_rule["protocol"]
         image_request_mode = locked_rule["image_request_mode"]
-    video_models = model_list_from_values(item.get("video_models") or [])
+    image_models, chat_models, video_models = normalize_provider_model_categories(
+        item.get("image_models") or [],
+        item.get("chat_models") or [],
+        item.get("video_models") or [],
+        protocol,
+    )
     if locked_rule and "video_models" in locked_rule:
         video_models = model_list_from_values(locked_rule.get("video_models") or [])
     return {
@@ -1308,8 +1431,8 @@ def normalize_provider(item):
         "image_edit_endpoint": image_edit_endpoint,
         "enabled": bool(item.get("enabled", True)),
         "primary": bool(item.get("primary", False)),
-        "image_models": model_list_from_values(item.get("image_models") or []),
-        "chat_models": model_list_from_values(item.get("chat_models") or []),
+        "image_models": image_models,
+        "chat_models": chat_models,
         "video_models": video_models,
         "model_names": normalize_model_name_map(item.get("model_names")),
         "model_protocols": normalize_model_protocols(item.get("model_protocols")),
@@ -1319,6 +1442,14 @@ def normalize_provider(item):
         "rh_workflows": normalize_runninghub_entries(item.get("rh_workflows") or [], "workflow"),
         "volcengine_project_name": volc_project,
         "volcengine_region": volc_region,
+        "volcengine_tos_bucket": tos_bucket,
+        "volcengine_tos_region": tos_region,
+        "volcengine_tos_endpoint": tos_endpoint,
+        "volcengine_tos_prefix": tos_prefix,
+        "volcengine_tos_public_base_url": tos_public_base,
+        "volcengine_tos_access_mode": tos_access_mode,
+        "volcengine_tos_signed_expires": tos_signed_expires,
+        "volcengine_tos_auto_match": tos_auto_match,
     }
 
 def load_api_providers():
@@ -1452,6 +1583,14 @@ def public_provider(provider):
             "volcengine_secret_key_env": volcengine_secret_key_env(),
             "volcengine_project_name": provider.get("volcengine_project_name") or VOLCENGINE_DEFAULT_PROJECT_NAME,
             "volcengine_region": provider.get("volcengine_region") or VOLCENGINE_DEFAULT_REGION,
+            "volcengine_tos_bucket": provider.get("volcengine_tos_bucket") or "",
+            "volcengine_tos_region": provider.get("volcengine_tos_region") or provider.get("volcengine_region") or VOLCENGINE_DEFAULT_REGION,
+            "volcengine_tos_endpoint": provider.get("volcengine_tos_endpoint") or "",
+            "volcengine_tos_prefix": provider.get("volcengine_tos_prefix") or VOLCENGINE_TOS_DEFAULT_PREFIX,
+            "volcengine_tos_public_base_url": provider.get("volcengine_tos_public_base_url") or "",
+            "volcengine_tos_access_mode": provider.get("volcengine_tos_access_mode") or VOLCENGINE_TOS_DEFAULT_ACCESS_MODE,
+            "volcengine_tos_signed_expires": int(provider.get("volcengine_tos_signed_expires") or VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES),
+            "volcengine_tos_auto_match": provider.get("volcengine_tos_auto_match") is not False,
         })
     return item
 
@@ -2835,8 +2974,14 @@ class ImageTaskQueryRequest(BaseModel):
     provider_id: str = "comfly"
     task_id: str = Field(min_length=1, max_length=240)
 
+class VideoTaskQueryRequest(BaseModel):
+    provider_id: str = "comfly"
+    task_id: str = Field(min_length=1, max_length=240)
+
 CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
 CANVAS_TASK_LOCK = Lock()
+ACTIVE_CANVAS_VIDEO_TASKS = set()
+CURRENT_CANVAS_VIDEO_TASK_ID: ContextVar[str] = ContextVar("current_canvas_video_task_id", default="")
 
 class CanvasVideoRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
@@ -2858,6 +3003,64 @@ class CanvasVideoRequest(BaseModel):
     generate_audio: bool = False
     multimodal: bool = False
     trusted_asset: bool = False
+
+def canvas_video_task_for_storage(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist only resumable, JSON-safe video task state (never provider secrets)."""
+    stored = dict(task or {})
+    result = stored.get("result")
+    if isinstance(result, dict):
+        stored["result"] = {key: value for key, value in result.items() if key != "raw"}
+    return stored
+
+def persist_canvas_video_tasks_locked():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tasks = {
+        task_id: canvas_video_task_for_storage(task)
+        for task_id, task in CANVAS_TASKS.items()
+        if isinstance(task, dict) and task.get("type") == "online-video"
+    }
+    temp_path = f"{CANVAS_VIDEO_TASKS_FILE}.{uuid.uuid4().hex}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump({"tasks": tasks}, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, CANVAS_VIDEO_TASKS_FILE)
+
+def update_canvas_video_task(task_id: str, **updates):
+    if not task_id:
+        return
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        if not isinstance(task, dict):
+            return
+        task.update(updates)
+        task["updated_at"] = time.time()
+        persist_canvas_video_tasks_locked()
+
+def load_canvas_video_tasks():
+    if not os.path.exists(CANVAS_VIDEO_TASKS_FILE):
+        return
+    try:
+        with open(CANVAS_VIDEO_TASKS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        tasks = saved.get("tasks") if isinstance(saved, dict) else {}
+        if not isinstance(tasks, dict):
+            return
+        for task_id, task in tasks.items():
+            if not str(task_id).startswith("canvas_video_") or not isinstance(task, dict):
+                continue
+            # A process restart interrupts the local coroutine. If the upstream id
+            # was already captured, GET can safely resume polling without charging
+            # for a second generation. Otherwise make the interruption explicit.
+            if task.get("status") in {"queued", "running"}:
+                if task.get("upstream_task_id"):
+                    task["status"] = "waiting"
+                else:
+                    task["status"] = "failed"
+                    task["error"] = "本地服务在上游任务 ID 返回前重启，无法安全自动重试（为避免重复计费）。"
+            CANVAS_TASKS[str(task_id)] = task
+    except Exception as exc:
+        print(f"加载画布视频任务失败: {exc}")
+
+load_canvas_video_tasks()
 
 class TempShUploadRequest(BaseModel):
     url: str = ""
@@ -2944,6 +3147,14 @@ class ApiProviderPayload(BaseModel):
     rh_workflows: List[Dict[str, Any]] = []
     volcengine_project_name: str = VOLCENGINE_DEFAULT_PROJECT_NAME
     volcengine_region: str = VOLCENGINE_DEFAULT_REGION
+    volcengine_tos_bucket: str = ""
+    volcengine_tos_region: str = ""
+    volcengine_tos_endpoint: str = ""
+    volcengine_tos_prefix: str = VOLCENGINE_TOS_DEFAULT_PREFIX
+    volcengine_tos_public_base_url: str = ""
+    volcengine_tos_access_mode: str = VOLCENGINE_TOS_DEFAULT_ACCESS_MODE
+    volcengine_tos_signed_expires: int = VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES
+    volcengine_tos_auto_match: bool = True
     volcengine_access_key_id: Optional[str] = None
     volcengine_secret_access_key: Optional[str] = None
     api_key: Optional[str] = None
@@ -8747,6 +8958,11 @@ def valid_apimart_video_image_input(value: str) -> bool:
     value = value.strip()
     return value.startswith("http://") or value.startswith("https://") or value.startswith("asset://")
 
+
+def valid_apimart_video_url(value: str) -> bool:
+    """APIMart 的 video_urls 字段比图片字段更严格，不接受 asset://。"""
+    return isinstance(value, str) and value.strip().startswith(("http://", "https://"))
+
 def apply_trusted_asset_prompt_index(prompt: str, image_count: int, video_count: int, audio_count: int) -> str:
     """可信素材模式下，按平台规则在 prompt 里补「图片N/视频N/音频N」索引。
     若用户已手动引用了某类素材（如已写「图片1」），则不重复追加该类。"""
@@ -8793,6 +9009,303 @@ def local_asset_public_url(value: str) -> str:
     if not base:
         return ""
     return f"{base}{urllib.parse.quote(text, safe='/:?&=%#.-_~')}{public_media_url_suffix()}"
+
+
+def volcengine_tos_config(provider=None) -> Dict[str, Any]:
+    if provider is None:
+        provider = next((item for item in load_api_providers() if item.get("id") == "volcengine"), {})
+    region = str((provider or {}).get("volcengine_tos_region") or (provider or {}).get("volcengine_region") or VOLCENGINE_DEFAULT_REGION).strip() or VOLCENGINE_DEFAULT_REGION
+    endpoint = str((provider or {}).get("volcengine_tos_endpoint") or f"tos-{region}.volces.com").strip().rstrip("/")
+    if "://" in endpoint:
+        endpoint = urllib.parse.urlsplit(endpoint).hostname or ""
+    try:
+        signed_expires = int((provider or {}).get("volcengine_tos_signed_expires") or VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES)
+    except (TypeError, ValueError):
+        signed_expires = VOLCENGINE_TOS_DEFAULT_SIGNED_EXPIRES
+    return {
+        "bucket": str((provider or {}).get("volcengine_tos_bucket") or "").strip().lower(),
+        "region": region,
+        "endpoint": endpoint.lower(),
+        "prefix": str((provider or {}).get("volcengine_tos_prefix") or VOLCENGINE_TOS_DEFAULT_PREFIX).strip().replace("\\", "/").strip("/"),
+        "public_base_url": str((provider or {}).get("volcengine_tos_public_base_url") or "").strip().rstrip("/"),
+        "access_mode": str((provider or {}).get("volcengine_tos_access_mode") or VOLCENGINE_TOS_DEFAULT_ACCESS_MODE).strip().lower(),
+        "signed_expires": max(600, min(signed_expires, 30 * 24 * 60 * 60)),
+        "auto_match": (provider or {}).get("volcengine_tos_auto_match") is not False,
+        "access_key": volcengine_access_key_value(),
+        "secret_key": volcengine_secret_key_value(),
+    }
+
+
+def volcengine_tos_is_configured(provider=None) -> bool:
+    return bool(volcengine_tos_config(provider).get("bucket"))
+
+
+def tos_original_filename(item: Dict[str, Any], local_path: str) -> str:
+    raw_url = urllib.parse.unquote(str((item or {}).get("url") or "").split("?", 1)[0])
+    filename = os.path.basename(raw_url.replace("\\", "/")) or os.path.basename(local_path)
+    filename = re.sub(r"^(?:lib|asset)_[0-9a-f]{8,32}_", "", filename, flags=re.I)
+    if not os.path.splitext(filename)[1]:
+        filename += os.path.splitext(local_path)[1]
+    filename = re.sub(r"[\x00-\x1f]+", "_", filename).strip().strip("./")
+    return filename or os.path.basename(local_path)
+
+
+def file_sha256_md5_size(path: str) -> Tuple[str, str, int]:
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5()
+    size = 0
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            sha256.update(chunk)
+            md5.update(chunk)
+    return sha256.hexdigest(), md5.hexdigest(), size
+
+
+def file_tos_crc64_ecma(path: str) -> int:
+    from tos.utils import Crc64
+    checksum = Crc64()
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            checksum.update(chunk)
+    return int(checksum.crc)
+
+
+def tos_object_url(client, config: Dict[str, Any], key: str) -> Tuple[str, int]:
+    quoted_key = urllib.parse.quote(str(key or "").lstrip("/"), safe="/~._-")
+    if config.get("access_mode") == "signed":
+        import tos
+        result = client.pre_signed_url(
+            tos.HttpMethodType.Http_Method_Get,
+            config["bucket"],
+            key,
+            expires=config["signed_expires"],
+        )
+        return str(result.signed_url or ""), int(time.time()) + int(config["signed_expires"])
+    base = str(config.get("public_base_url") or "").rstrip("/")
+    if not base:
+        base = f"https://{config['bucket']}.{config['endpoint']}"
+    return f"{base}/{quoted_key}", 0
+
+
+def tos_head_object_or_none(client, bucket: str, key: str):
+    try:
+        return client.head_object(bucket, key)
+    except Exception as exc:
+        status = int(getattr(exc, "status_code", 0) or getattr(exc, "status", 0) or 0)
+        code = str(getattr(exc, "code", "") or getattr(exc, "request_id", "") or "").lower()
+        if status == 404 or "nosuchkey" in code or "notfound" in code:
+            return None
+        raise
+
+
+def tos_head_matches_local(head, local_md5: str, local_size: int, local_sha256: str = "", local_crc64: Optional[int] = None) -> bool:
+    if not head:
+        return False
+    try:
+        remote_size = int(getattr(head, "content_length", -1))
+    except (TypeError, ValueError):
+        remote_size = -1
+    if remote_size != int(local_size):
+        return False
+    meta = getattr(head, "meta", {}) or {}
+    remote_sha256 = str(meta.get("infinite-canvas-sha256") or meta.get("canvas-sha256") or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", remote_sha256):
+        return bool(local_sha256 and remote_sha256 == local_sha256.lower())
+    etag = str(getattr(head, "etag", "") or "").strip().strip('"').lower()
+    if re.fullmatch(r"[0-9a-f]{32}", etag):
+        return etag == local_md5.lower()
+    remote_crc64 = getattr(head, "hash_crc64_ecma", None)
+    if remote_crc64 is not None and local_crc64 is not None:
+        try:
+            return int(remote_crc64) == int(local_crc64)
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+async def verify_tos_media_url(url: str) -> None:
+    if str(os.getenv("TOS_VERIFY_PUBLIC_URL", "1") or "1").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as response:
+                if response.status_code not in (200, 206):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"TOS 地址尚不可匿名读取（HTTP {response.status_code}）。请为该对象授予公共读，或改用预签名 URL 模式。",
+                    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"无法从公网验证 TOS 视频地址：{exc}") from exc
+
+
+def find_asset_item_by_url(lib: Dict[str, Any], value: str):
+    wanted = urllib.parse.unquote(str(value or "").split("?", 1)[0]).replace("\\", "/")
+    for library in lib.get("libraries", []) if isinstance(lib, dict) else []:
+        for category in library.get("categories", []) or []:
+            for item in category.get("items", []) or []:
+                current = urllib.parse.unquote(str(item.get("url") or "").split("?", 1)[0]).replace("\\", "/")
+                if current == wanted:
+                    return item
+    return None
+
+
+def find_asset_item_by_registration_uri(lib: Dict[str, Any], value: str):
+    wanted = str(value or "").strip()
+    if not wanted.startswith("asset://"):
+        return None
+    for library in lib.get("libraries", []) if isinstance(lib, dict) else []:
+        for category in library.get("categories", []) or []:
+            for item in category.get("items", []) or []:
+                registrations = item.get("registrations") if isinstance(item.get("registrations"), dict) else {}
+                for registration in registrations.values():
+                    if isinstance(registration, dict) and str(registration.get("asset_uri") or "").strip() == wanted:
+                        return item
+    return None
+
+
+async def ensure_asset_item_tos_url(item: Dict[str, Any], provider=None) -> str:
+    """确保本地素材已精确映射到 TOS，并返回 APIMart/Ark 可读取的 URL。"""
+    config = volcengine_tos_config(provider)
+    if not config.get("bucket"):
+        return ""
+    if not config.get("access_key") or not config.get("secret_key"):
+        raise HTTPException(status_code=400, detail="已配置 TOS Bucket，但缺少火山 Access Key ID / Secret Access Key。请在 API 平台管理的火山引擎中补齐 AK/SK。")
+    source_url = str((item or {}).get("url") or "").strip()
+    local_path = output_file_from_url(source_url)
+    if not local_path or not os.path.isfile(local_path):
+        if re.match(r"^https?://", source_url, re.I):
+            return ""
+        raise HTTPException(status_code=404, detail="本地素材文件不存在或已被删除")
+    try:
+        import tos
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="未安装火山 TOS SDK。请运行“安装依赖.bat”或执行 python -m pip install tos。") from exc
+
+    sha256, md5, local_size = await asyncio.to_thread(file_sha256_md5_size, local_path)
+    local_crc64 = await asyncio.to_thread(file_tos_crc64_ecma, local_path)
+    original_name = tos_original_filename(item, local_path)
+    prefix = str(config.get("prefix") or "").strip("/")
+    mapped = ((item.get("remote_sources") or {}).get("tos") or {}) if isinstance(item.get("remote_sources"), dict) else {}
+    candidate_keys = []
+    mapped_key = str(mapped.get("object_key") or "").strip().lstrip("/")
+    if mapped_key and str(mapped.get("bucket") or "").lower() == config["bucket"]:
+        candidate_keys.append(mapped_key)
+    if config.get("auto_match"):
+        candidate_keys.extend(filter(None, [f"{prefix}/{original_name}" if prefix else "", original_name]))
+    deterministic_name = f"{sha256[:12]}_{original_name}"
+    deterministic_key = f"{prefix}/{deterministic_name}" if prefix else deterministic_name
+    candidate_keys.append(deterministic_key)
+    candidate_keys = list(dict.fromkeys(str(key).strip().lstrip("/") for key in candidate_keys if str(key).strip()))
+
+    client = tos.TosClientV2(
+        config["access_key"],
+        config["secret_key"],
+        config["endpoint"],
+        config["region"],
+        request_timeout=60,
+        socket_timeout=60,
+    )
+    chosen_key = ""
+    matched_existing = False
+    head = None
+    try:
+        for key in candidate_keys:
+            candidate_head = await asyncio.to_thread(tos_head_object_or_none, client, config["bucket"], key)
+            if tos_head_matches_local(candidate_head, md5, local_size, sha256, local_crc64):
+                chosen_key, head, matched_existing = key, candidate_head, True
+                break
+        if not chosen_key:
+            chosen_key = deterministic_key
+            acl = tos.ACLType.ACL_Public_Read if config.get("access_mode") == "public-read" else tos.ACLType.ACL_Private
+            await asyncio.to_thread(
+                client.put_object_from_file,
+                config["bucket"],
+                chosen_key,
+                local_path,
+                content_type=content_type_for_path(local_path),
+                acl=acl,
+                meta={"infinite-canvas-sha256": sha256, "infinite-canvas-item-id": str(item.get("id") or "")[:120]},
+                forbid_overwrite=True,
+            )
+            head = await asyncio.to_thread(client.head_object, config["bucket"], chosen_key)
+        elif config.get("access_mode") == "public-read":
+            acl_error = None
+            try:
+                await asyncio.to_thread(client.put_object_acl, config["bucket"], chosen_key, acl=tos.ACLType.ACL_Public_Read)
+            except Exception as exc:
+                acl_error = exc
+            if acl_error:
+                # 旧对象可能已经是公共读；稍后公网校验通过时仍可安全复用。
+                mapped["acl_warning"] = str(acl_error)[:300]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        status = int(getattr(exc, "status_code", 0) or 0)
+        code = str(getattr(exc, "code", "") or "")
+        raise HTTPException(status_code=502, detail=f"TOS 匹配/上传失败{f'（HTTP {status}）' if status else ''}{f' [{code}]' if code else ''}：{exc}") from exc
+
+    public_url, url_expires_at = tos_object_url(client, config, chosen_key)
+    await verify_tos_media_url(public_url)
+    remote_sources = item.get("remote_sources") if isinstance(item.get("remote_sources"), dict) else {}
+    remote_sources["tos"] = {
+        "bucket": config["bucket"],
+        "region": config["region"],
+        "endpoint": config["endpoint"],
+        "object_key": chosen_key,
+        "url": public_url,
+        "url_expires_at": url_expires_at,
+        "access_mode": config["access_mode"],
+        "etag": str(getattr(head, "etag", "") or "").strip('"'),
+        "size": local_size,
+        "sha256": sha256,
+        "original_filename": original_name,
+        "matched_existing": matched_existing,
+        "synced_at": now_ms(),
+    }
+    item["remote_sources"] = remote_sources
+    return public_url
+
+
+async def local_asset_tos_public_url(value: str, provider=None) -> str:
+    if not volcengine_tos_is_configured(provider):
+        return ""
+    lib = load_asset_library()
+    item = find_asset_item_by_url(lib, value)
+    if not item:
+        return ""
+    url = await ensure_asset_item_tos_url(item, provider)
+    if url:
+        save_asset_library(lib)
+    return url
+
+
+async def registered_asset_tos_http_url(value: str, provider=None) -> str:
+    """把平台 asset:// 标识反查为 video_urls 可接受的 TOS http/https 地址。"""
+    text = str(value or "").strip()
+    if not text.startswith("asset://"):
+        return ""
+    lib = load_asset_library()
+    item = find_asset_item_by_registration_uri(lib, text)
+    if not item:
+        return ""
+    tos_mapping = ((item.get("remote_sources") or {}).get("tos") or {}) if isinstance(item.get("remote_sources"), dict) else {}
+    mapped_url = str(tos_mapping.get("url") or "").strip()
+    access_mode = str(tos_mapping.get("access_mode") or "").strip().lower()
+    if mapped_url.startswith(("http://", "https://")) and access_mode == "public-read":
+        return mapped_url
+    url = await ensure_asset_item_tos_url(item, provider)
+    if url:
+        save_asset_library(lib)
+    return url
 
 async def openai_video_proxy_public_reference_url(ref) -> str:
     """异步生图（openai-video-proxy）的参考图公网化。
@@ -8850,7 +9363,7 @@ def openai_video_proxy_local_image_path(ref) -> str:
 
 def normalize_apimart_video_reference(value: str) -> str:
     text = str(value or "").strip()
-    if valid_apimart_video_image_input(text):
+    if text.startswith(("http://", "https://")):
         return text
     return local_asset_public_url(text)
 
@@ -8864,14 +9377,16 @@ def apimart_video_reference_error(value: str) -> str:
         return (
             "这是本地画布文件，APIMart 无法访问 127.0.0.1/局域网路径；"
             "请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），"
-            "或改用公网 http/https 视频 URL、审核后的 asset:// 地址。"
+            "或使用已同步到 TOS 的公网 http/https 视频 URL。"
         )
     if text.startswith("data:") or text.startswith("blob:") or text.startswith("file:"):
         return (
             "APIMart 的 video_urls 不支持 data/blob/file 地址；"
-            "请改用公网 http/https 视频 URL，或审核后的 asset:// 地址。"
+            "请改用公网 http/https 视频 URL。"
         )
-    return "APIMart 的 video_urls 只支持公网 http/https URL 或 asset:// 私域素材 URL。"
+    if text.startswith("asset://"):
+        return "MiniMax-H3 的 video_urls 不接受 asset://；系统未能找到该私域素材对应的 TOS 公网 URL，请在素材库重新同步/匹配 TOS。"
+    return "APIMart 的 video_urls 只支持公网 http/https URL。"
 
 def apimart_video_duration(duration) -> int:
     try:
@@ -8879,6 +9394,54 @@ def apimart_video_duration(duration) -> int:
     except Exception:
         value = 5
     return max(4, min(15, value))
+
+def is_apimart_minimax_h3_generation_model(model: str) -> bool:
+    return str(model or "").strip().lower() == "minimax-h3"
+
+def apimart_minimax_h3_resolution(resolution: str) -> str:
+    value = str(resolution or "").strip().upper()
+    if value in {"768P", "720P"}:
+        return "768P"
+    return "2K"
+
+def apimart_minimax_h3_aspect(aspect: str) -> str:
+    value = str(aspect or "16:9").strip()
+    allowed = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+    return value if value in allowed else "16:9"
+
+def apimart_minimax_h3_video_body(payload, model="MiniMax-H3"):
+    """Build the documented H3 generation payload without Seedance-only fields."""
+    return {
+        "model": "MiniMax-H3" if is_apimart_minimax_h3_generation_model(model) else model,
+        "prompt": payload.prompt,
+        "duration": apimart_video_duration(payload.duration),
+        "resolution": apimart_minimax_h3_resolution(payload.resolution),
+        "aspect_ratio": apimart_minimax_h3_aspect(payload.aspect_ratio or payload.size),
+        "watermark": bool(payload.watermark),
+    }
+
+def validate_apimart_minimax_h3_media(image_with_roles, image_urls, video_urls, audio_urls):
+    frame_roles = {
+        str(item.get("role") or "").strip().lower()
+        for item in image_with_roles or []
+        if str(item.get("role") or "").strip().lower() in {"first", "first_frame", "last", "last_frame"}
+    }
+    reference_roles = {
+        str(item.get("role") or "").strip().lower()
+        for item in image_with_roles or []
+        if str(item.get("role") or "").strip().lower() in {"reference", "reference_image"}
+    }
+    has_reference_media = bool(reference_roles or image_urls or video_urls)
+    if frame_roles and (has_reference_media or audio_urls):
+        raise HTTPException(
+            status_code=400,
+            detail="MiniMax-H3 的首/尾帧图生视频与参考图、参考视频、参考音频严格互斥，请只保留其中一种生成模式。",
+        )
+    if audio_urls and not has_reference_media:
+        raise HTTPException(
+            status_code=400,
+            detail="MiniMax-H3 不能只输入参考音频；请同时加入至少一张参考图或一个参考视频。",
+        )
 
 def apimart_veo31_duration(duration) -> int:
     try:
@@ -9093,13 +9656,34 @@ async def upload_image_for_apimart(client, provider, ref_url: str) -> str:
     return "ERR:不支持的图片来源（仅支持 http/https/asset/data 或本地 /output/ /assets/ 路径）"
 
 async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
-    """尽力把本地参考视频转换为 APIMart 可接受的 http/https 或 asset:// URL。
-    文档只公开了图片上传；如果视频上传端点不可用，会回退到 PUBLIC_BASE_URL 方案。"""
+    """把参考视频转换为 APIMart video_urls 严格要求的 http/https URL。
+    优先使用已配置的 PUBLIC_MEDIA_BASE_URL；没有公网基址时，把本地视频自动上传到
+    项目已有的 Litterbox/temp.sh 公网短链通道。APIMart 文档没有公开通用视频上传
+    端点，因此仅在显式开启 APIMART_TRY_VIDEO_UPLOAD 时才尝试其实验性上传端点。"""
     ref_url = str(ref_url or "").strip()
     if not ref_url:
         return "ERR:空地址"
-    if valid_apimart_video_image_input(ref_url):
+    if ref_url.startswith(("http://", "https://")):
         return ref_url
+    if ref_url.startswith("asset://"):
+        try:
+            resolved_asset_url = await registered_asset_tos_http_url(ref_url)
+            if resolved_asset_url.startswith(("http://", "https://")):
+                return resolved_asset_url
+            return f"ERR:{apimart_video_reference_error(ref_url)}"
+        except HTTPException as exc:
+            return f"ERR:asset:// 素材转换为 TOS 公网地址失败：{exc.detail or exc}"
+        except Exception as exc:
+            return f"ERR:asset:// 素材转换为 TOS 公网地址失败：{exc}"
+    tos_error = ""
+    try:
+        tos_url = await local_asset_tos_public_url(ref_url)
+        if tos_url.startswith(("http://", "https://")):
+            return tos_url
+    except HTTPException as exc:
+        tos_error = str(exc.detail or exc)
+    except Exception as exc:
+        tos_error = str(exc)
     public_url = local_asset_public_url(ref_url)
     if public_url:
         return public_url
@@ -9111,8 +9695,35 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
     ct = content_type_for_path(path)
     if not ct.startswith("video/"):
         return "ERR:参考视频不是可识别的视频文件"
-    if str(os.getenv("APIMART_TRY_VIDEO_UPLOAD") or "").strip().lower() not in {"1", "true", "yes", "on"}:
-        return f"ERR:{apimart_video_reference_error(ref_url)}"
+    auto_publicize = str(os.getenv("APIMART_AUTO_PUBLICIZE_LOCAL_VIDEO", "1") or "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    cloud_error = ""
+    if auto_publicize:
+        try:
+            uploaded = await cached_public_media_upload(
+                ref_url,
+                path,
+                str(os.getenv("APIMART_LOCAL_VIDEO_UPLOAD_SERVICE") or "").strip(),
+            )
+            uploaded_url = str((uploaded or {}).get("url") or "").strip()
+            if uploaded_url.startswith(("http://", "https://")):
+                return uploaded_url
+            cloud_error = "临时存储未返回可用的 http/https 地址"
+        except HTTPException as exc:
+            cloud_error = str(exc.detail or exc)
+        except Exception as exc:
+            cloud_error = str(exc)
+    try_video_upload = str(os.getenv("APIMART_TRY_VIDEO_UPLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not try_video_upload:
+        if not auto_publicize:
+            return f"ERR:{apimart_video_reference_error(ref_url)}"
+        return (
+            "ERR:本地视频自动上传公网临时存储失败："
+            f"{cloud_error or '未知错误'}。"
+            f"{('TOS 同步失败：' + tos_error + '。') if tos_error else ''}请检查网络后重试；也可以配置 PUBLIC_MEDIA_BASE_URL，"
+            "或在智能画布中改用可匿名访问的公网视频 URL。"
+        )
     base_url = video_api_root(provider)
     filename, content, content_type = apimart_upload_raw_file_payload(path)
     upload_paths = ("/v1/uploads/videos", "/v1/uploads/files", "/v1/uploads/images")
@@ -9125,7 +9736,7 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
             if resp.status_code in (200, 201):
                 rj = resp.json()
                 url = extract_apimart_asset_url(rj)
-                if valid_apimart_video_image_input(url):
+                if str(url or "").startswith(("http://", "https://")):
                     return url
                 last_error = "上传响应未包含可用 URL"
                 print(f"APIMart 视频上传返回中未找到可用 asset/url ({upload_path}): {str(rj)[:300]}")
@@ -9135,7 +9746,9 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
         except Exception as e:
             last_error = f"{upload_path} 异常：{e}"
             print(f"APIMart 视频上传异常: {last_error}")
-    return f"ERR:APIMart 未提供可用的视频文件上传入口（{last_error}）。请配置 PUBLIC_BASE_URL，或使用公网 http/https / asset:// 视频地址。"
+    cloud_hint = f"；临时公网上传失败：{cloud_error}" if cloud_error else ""
+    tos_hint = f"；TOS 同步失败：{tos_error}" if tos_error else ""
+    return f"ERR:APIMart 未提供可用的视频文件上传入口（{last_error}{tos_hint}{cloud_hint}）。请配置火山 TOS、PUBLIC_MEDIA_BASE_URL，或使用公网 http/https 视频地址。"
 
 async def upload_audio_for_apimart(client, provider, ref_url: str) -> str:
     """把本地参考音频转换为 APIMart 可接受的 http/https 或 asset:// URL。
@@ -9479,6 +10092,58 @@ async def upload_video_to_temp_sh(path: str, source_url: str) -> Dict[str, str]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Temp.sh 上传异常：{exc}") from exc
+
+PUBLIC_MEDIA_UPLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def public_media_upload_cache_key(path: str) -> str:
+    """缓存同一份本地视频的公网短链，避免一次画布任务重复上传。"""
+    stat = os.stat(path)
+    return f"{os.path.normcase(os.path.abspath(path))}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def public_media_upload_cache_ttl() -> int:
+    try:
+        value = int(os.getenv("PUBLIC_MEDIA_UPLOAD_CACHE_SECONDS", str(6 * 60 * 60)))
+    except (TypeError, ValueError):
+        value = 6 * 60 * 60
+    # 临时链接本身通常为 72 小时；默认只复用 6 小时，为异步任务留足有效期。
+    return max(60, min(value, 48 * 60 * 60))
+
+
+async def cached_public_media_upload(ref_url: str, path: str = "", service: str = "") -> Dict[str, str]:
+    resolved_path = path or local_video_path_for_cloud_upload(ref_url)
+    cache_key = public_media_upload_cache_key(resolved_path)
+    now = time.monotonic()
+    cached = PUBLIC_MEDIA_UPLOAD_CACHE.get(cache_key) or {}
+    cached_url = str(cached.get("url") or "").strip()
+    if cached_url.startswith(("http://", "https://")) and float(cached.get("expires_at") or 0) > now:
+        return {
+            "url": cached_url,
+            "source": ref_url,
+            "service": str(cached.get("service") or "cache"),
+            "expires": str(cached.get("expires") or ""),
+            "cached": True,
+        }
+    uploaded = await upload_local_video_to_cloud(
+        ref_url,
+        str(service or os.getenv("CLOUD_VIDEO_UPLOAD_SERVICE") or "auto").strip() or "auto",
+    )
+    uploaded_url = str((uploaded or {}).get("url") or "").strip()
+    if not uploaded_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=502, detail="临时存储没有返回可用的公网视频地址")
+    PUBLIC_MEDIA_UPLOAD_CACHE[cache_key] = {
+        "url": uploaded_url,
+        "service": str((uploaded or {}).get("service") or ""),
+        "expires": str((uploaded or {}).get("expires") or ""),
+        "expires_at": now + public_media_upload_cache_ttl(),
+    }
+    if len(PUBLIC_MEDIA_UPLOAD_CACHE) > 256:
+        stale_keys = [key for key, item in PUBLIC_MEDIA_UPLOAD_CACHE.items() if float(item.get("expires_at") or 0) <= now]
+        for key in stale_keys:
+            PUBLIC_MEDIA_UPLOAD_CACHE.pop(key, None)
+    return {**uploaded, "cached": False}
+
 
 async def upload_local_video_to_cloud(ref_url: str, service: str = "auto") -> Dict[str, str]:
     ref_url = str(ref_url or "").strip()
@@ -11235,6 +11900,15 @@ async def generate_runninghub_video(payload, provider):
 
 async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id="comfly", aspect_ratio="", resolution=""):
     provider = get_api_provider(provider_id)
+    if is_apimart_provider(provider) and is_midjourney_task_model(model):
+        return await generate_apimart_midjourney_image(
+            prompt,
+            size,
+            model,
+            reference_images,
+            provider,
+            aspect_ratio,
+        )
     if is_tudou_provider(provider):
         model = tudou_image_model_for_request(model)
     if provider["id"] == "modelscope":
@@ -13420,6 +14094,10 @@ def upstream_models_url(base_url: str, protocol: str):
         return runninghub_openapi_url({"base_url": base_url}, "models")
     return f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
 
+def upstream_models_params(protocol: str):
+    # APIMart's expanded response supplies the authoritative image/chat/video/audio category.
+    return {"expand": "category"} if str(protocol or "").strip().lower() == "apimart" else None
+
 def upstream_model_headers(api_key: str, protocol: str):
     if protocol == "gemini":
         return {"x-goog-api-key": api_key, "Accept": "application/json"}
@@ -13550,15 +14228,40 @@ async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
         "raw": {"task_probe": task_probe, "openai_compat_probe": compat_probe.get("raw")},
     }
 
-def classify_upstream_model(mid):
+def classify_upstream_model(mid, protocol="openai"):
     lc = str(mid or "").lower()
+    if str(protocol or "").strip().lower() == "apimart":
+        override = apimart_model_category(lc)
+        if override:
+            return override
+    if is_seedance_video_model(lc):
+        return "video"
     video_keys = ["veo", "sora", "wan2", "wanx", "doubao-seedance", "doubao-1", "kling", "hailuo", "video", "t2v-", "i2v-", "s2v"]
     if any(k in lc for k in video_keys):
         return "video"
-    image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein", "seedream", "doubao-seedream", "text-to-image", "image-to-image"]
+    image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable-diffusion", "stability-", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein", "seedream", "doubao-seedream", "text-to-image", "image-to-image"]
     if any(k in lc for k in image_keys):
         return "image"
     return "chat"
+
+def expand_upstream_model_ids(value):
+    """Flatten model IDs that an upstream returns as a list or JSON list string."""
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for item in value:
+            result.extend(expand_upstream_model_ids(item))
+        return result
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return expand_upstream_model_ids(parsed)
+    return [text]
 
 def parse_upstream_models(raw, protocol="openai"):
     items = raw.get("data") if isinstance(raw, dict) else None
@@ -13567,22 +14270,30 @@ def parse_upstream_models(raw, protocol="openai"):
     if not isinstance(items, list):
         items = []
     ids = []
+    upstream_categories = {}
     for it in items:
         if isinstance(it, str):
             mid = it
+            upstream_category = ""
         elif isinstance(it, dict):
             mid = it.get("id") or it.get("name") or it.get("model")
+            upstream_category = str(it.get("category") or "").strip().lower()
         else:
             mid = ""
-        if mid:
-            mid = str(mid)
+            upstream_category = ""
+        for mid in expand_upstream_model_ids(mid):
             if protocol == "gemini" and mid.startswith("models/"):
                 mid = mid[len("models/"):]
             ids.append(mid)
+            if str(protocol or "").strip().lower() == "apimart" and upstream_category in {"image", "chat", "video", "audio"}:
+                # The canvas currently has three selectors. Audio remains in the LLM/chat bucket
+                # until a dedicated audio selector exists, while visual categories stay exact.
+                upstream_categories[mid] = "chat" if upstream_category == "audio" else upstream_category
     ids = sorted(set(ids))
     grouped = {"image": [], "chat": [], "video": []}
     for mid in ids:
-        grouped[classify_upstream_model(mid)].append(mid)
+        category = upstream_categories.get(mid) or classify_upstream_model(mid, protocol)
+        grouped[category].append(mid)
     return grouped, ids
 
 def apply_agnes_model_defaults(base_url, grouped, ids):
@@ -13661,7 +14372,11 @@ async def test_provider_connection(payload: TestConnectionPayload):
     url = upstream_models_url(base_url, protocol)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
+            resp = await client.get(
+                url,
+                headers=upstream_model_headers(api_key, protocol),
+                params=upstream_models_params(protocol),
+            )
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location") or resp.headers.get("location") or ""
                 suffix = f"：{location}" if location else ""
@@ -13916,7 +14631,11 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
     url = upstream_models_url(base_url, protocol)
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
+            resp = await client.get(
+                url,
+                headers=upstream_model_headers(api_key, protocol),
+                params=upstream_models_params(protocol),
+            )
             endpoint_label = "/v1beta/models" if protocol == "gemini" else "/api/v3/models" if protocol == "volcengine" else "/openapi/v2/models" if protocol == "runninghub" else "/v1/models"
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location") or resp.headers.get("location") or ""
@@ -14169,6 +14888,34 @@ def midjourney_error_detail(raw, fallback="Midjourney 请求失败"):
         or fallback
     )
 
+def midjourney_error_code(raw):
+    data = midjourney_response_data(raw)
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    value = error.get("code") or data.get("code") or (raw.get("code") if isinstance(raw, dict) else "")
+    return str(value or "").strip().lower()
+
+def midjourney_retryable_submission(status_code, raw):
+    code = midjourney_error_code(raw)
+    message = midjourney_error_detail(raw, "").strip().lower()
+    if int(status_code or 0) == 429 or int(status_code or 0) >= 500:
+        return True
+    if code in {"3", "9", "429", "get_channel_failed", "no_available_upstream"}:
+        return True
+    return any(token in message for token in (
+        "get_channel_failed",
+        "no available upstream",
+        "please wait and try again later",
+        "暂无可用通道",
+        "无可用实例",
+    ))
+
+def midjourney_transient_error_detail(raw, attempts):
+    upstream = midjourney_error_detail(raw, "APIMart 暂无可用 Midjourney 通道")
+    return (
+        f"APIMart 暂时没有可分配的 Midjourney 上游通道，已自动尝试 {attempts} 次。"
+        f"请稍后重试；若持续出现，请在 APIMart 控制台确认 Midjourney 通道状态。上游信息：{upstream}"
+    )
+
 def midjourney_remote_images(raw):
     data = midjourney_response_data(raw)
     values = data.get("image_urls") or data.get("imageUrls") or []
@@ -14231,24 +14978,43 @@ async def midjourney_modal_mask_url(reference):
 
 async def apimart_midjourney_request(provider, path, body):
     timeout = httpx.Timeout(connect=20.0, read=180.0, write=120.0, pool=20.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        response = await client.post(
-            f"{APIMART_MIDJOURNEY_API_ROOT}{path}",
-            headers=api_headers(provider=provider),
-            json=body,
-        )
-    try:
-        raw = response.json()
-    except ValueError:
-        raw = {"message": response.text[:500]}
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=midjourney_error_detail(raw, f"Midjourney 接口错误（{response.status_code}）"))
-    task_id = midjourney_task_id(raw)
-    if not task_id:
+    retry_delays = (1.0, 4.0, 16.0)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{APIMART_MIDJOURNEY_API_ROOT}{path}",
+                    headers=api_headers(provider=provider),
+                    json=body,
+                )
+        except httpx.RequestError as exc:
+            if attempt == 0:
+                await asyncio.sleep(retry_delays[0])
+                continue
+            raise HTTPException(status_code=502, detail=f"请求 APIMart Midjourney 接口失败：{exc}") from exc
+        try:
+            raw = response.json()
+        except ValueError:
+            raw = {"message": response.text[:500]}
+        task_id = midjourney_task_id(raw)
+        if response.status_code < 400 and task_id:
+            return raw, task_id
+        retryable = midjourney_retryable_submission(response.status_code, raw)
+        if retryable and attempt < len(retry_delays):
+            await asyncio.sleep(retry_delays[attempt])
+            continue
+        if response.status_code >= 400:
+            detail = (
+                midjourney_transient_error_detail(raw, attempt + 1)
+                if retryable
+                else midjourney_error_detail(raw, f"Midjourney 接口错误（{response.status_code}）")
+            )
+            raise HTTPException(status_code=response.status_code, detail=detail)
+        if retryable:
+            raise HTTPException(status_code=503, detail=midjourney_transient_error_detail(raw, attempt + 1))
         raise HTTPException(status_code=502, detail=f"Midjourney 未返回任务 ID：{json.dumps(raw, ensure_ascii=False)[:500]}")
-    return raw, task_id
 
-async def midjourney_result(provider, task_id: str):
+async def apimart_midjourney_task_payload(provider, task_id: str):
     safe_task_id = str(task_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,240}", safe_task_id):
         raise HTTPException(status_code=400, detail="Midjourney 任务 ID 不合法。")
@@ -14264,6 +15030,58 @@ async def midjourney_result(provider, task_id: str):
         raw = {"message": response.text[:500]}
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=midjourney_error_detail(raw, f"查询 Midjourney 任务失败（{response.status_code}）"))
+    return safe_task_id, raw
+
+async def generate_apimart_midjourney_image(prompt, size, model, reference_images, provider, aspect_ratio=""):
+    """Bridge a normal canvas image node to APIMart's asynchronous Midjourney API."""
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Midjourney 文生图需要提示词。")
+    image_urls = await midjourney_reference_urls(reference_images or [])
+    body = {
+        "prompt": prompt,
+        "size": runninghub_aspect_from_size(aspect_ratio or size, "1:1"),
+        "version": "6.1",
+        "speed": "relax",
+        "metadata": {"source": "infinite-canvas", "canvas_model": str(model or "midjourney")},
+    }
+    if image_urls:
+        body["image_urls"] = image_urls
+    submitted_raw, task_id = await apimart_midjourney_request(
+        provider,
+        "/v1/midjourney/generations",
+        body,
+    )
+    deadline = time.monotonic() + APIMART_IMAGE_TASK_TIMEOUT
+    last_raw = submitted_raw
+    while time.monotonic() < deadline:
+        _safe_task_id, last_raw = await apimart_midjourney_task_payload(provider, task_id)
+        status = midjourney_task_status(last_raw)
+        if status in IMAGE_TASK_FAILED_STATUSES:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Midjourney 任务失败：{midjourney_error_detail(last_raw)}（task_id={task_id}）",
+            )
+        if status in IMAGE_TASK_SUCCESS_STATUSES:
+            remote_urls = midjourney_remote_images(last_raw)
+            if not remote_urls:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Midjourney 任务成功但没有返回图片（task_id={task_id}）。",
+                )
+            result_raw = dict(last_raw) if isinstance(last_raw, dict) else {"data": last_raw}
+            result_raw.setdefault("task_id", task_id)
+            return {"type": "url", "value": remote_urls[0]}, result_raw
+        await asyncio.sleep(min(APIMART_IMAGE_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+    raw_text = json.dumps(last_raw, ensure_ascii=False)[:800] if last_raw else ""
+    extra = f"，最后响应：{raw_text}" if raw_text else ""
+    raise HTTPException(
+        status_code=504,
+        detail=f"Midjourney 任务超时（已等待 {int(APIMART_IMAGE_TASK_TIMEOUT)} 秒），task_id={task_id}{extra}",
+    )
+
+async def midjourney_result(provider, task_id: str):
+    safe_task_id, raw = await apimart_midjourney_task_payload(provider, task_id)
     status = midjourney_task_status(raw)
     if status in IMAGE_TASK_FAILED_STATUSES:
         return {"status": "failed", "task_id": safe_task_id, "error": midjourney_error_detail(raw), "raw": raw}
@@ -14843,7 +15661,8 @@ def video_task_url_candidates(provider, base_url, task_id, submit_url=""):
             f"{base_url}/v1/video/query?{urllib.parse.urlencode({'id': task_id})}",
         ]
     if is_apimart_provider(provider):
-        task_path = f"{base_url}/tasks/{task_id}" if base_url.endswith("/v1") else f"{base_url}/v1/tasks/{task_id}"
+        quoted_id = urllib.parse.quote(str(task_id), safe="")
+        task_path = f"{base_url}/tasks/{quoted_id}" if base_url.endswith("/v1") else f"{base_url}/v1/tasks/{quoted_id}"
         return [f"{task_path}?language=zh"]
     if is_volcengine_provider(provider):
         parsed = urllib.parse.urlparse(base_url)
@@ -14860,6 +15679,19 @@ def video_task_url_candidates(provider, base_url, task_id, submit_url=""):
     if "/v2/videos/generations" in str(submit_url or ""):
         return [v2_task, v1_task, v1_generic_task]
     return [v1_task, v1_generic_task, v2_task]
+
+def remember_canvas_video_upstream_task(upstream_task_id: str, submit_url: str = ""):
+    """Attach the paid upstream task to the resumable local canvas task."""
+    local_task_id = CURRENT_CANVAS_VIDEO_TASK_ID.get("")
+    if not local_task_id or not upstream_task_id:
+        return
+    update_canvas_video_task(
+        local_task_id,
+        status="waiting",
+        upstream_task_id=str(upstream_task_id),
+        submit_url=str(submit_url or ""),
+        error="",
+    )
 
 VIDEO_TASK_SUCCESS_STATUSES = {
     "SUCCESS", "SUCCEED", "SUCCEEDED", "COMPLETED", "COMPLETE",
@@ -14929,7 +15761,13 @@ async def wait_for_video_task(client, provider, task_id, submit_url=""):
         )
         status = str(task_data.get("status") or task_data.get("task_status") or raw.get("status") or raw.get("task_status") or "").upper()
         if status in VIDEO_TASK_SUCCESS_STATUSES:
-            return raw
+            # APIMart occasionally publishes the completed state just before the
+            # result CDN URL is visible. Do not turn a paid successful job into a
+            # local "no video" failure; keep polling until the URL arrives.
+            if video_output_urls(raw) or not is_apimart_provider(provider):
+                return raw
+            delay = min(max(delay, 2.0), 5.0)
+            continue
         # 部分上游（如玉玉API）status 字段非标准或为空，但已经返回了视频 URL ——
         # 只要不是明确的失败状态，且拿到了真实视频地址，就直接当成功处理。
         if status not in VIDEO_TASK_FAILURE_STATUSES and video_output_urls(raw):
@@ -15589,6 +16427,7 @@ async def canvas_video(payload: CanvasVideoRequest):
             log_net_error(f"视频(土豆) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求土豆视频接口失败：{exc}") from exc
     is_veo31 = is_apimart and is_apimart_veo31_model(requested_model)
+    is_minimax_h3 = is_apimart and is_apimart_minimax_h3_generation_model(requested_model)
     if is_agnes:
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as agnes_client:
@@ -15638,7 +16477,7 @@ async def canvas_video(payload: CanvasVideoRequest):
                         invalid_videos.append((ref_url, "该地址是图片，不能作为参考视频。请将图片放入图片输入。"))
                         continue
                     normalized_video_url = await upload_video_for_apimart(client, provider, ref_url)
-                    if valid_apimart_video_image_input(normalized_video_url):
+                    if valid_apimart_video_url(normalized_video_url):
                         video_payload.append(normalized_video_url)
                     else:
                         reason = normalized_video_url[4:] if isinstance(normalized_video_url, str) and normalized_video_url.startswith("ERR:") else apimart_video_reference_error(ref_url)
@@ -15702,14 +16541,17 @@ async def canvas_video(payload: CanvasVideoRequest):
                     if model != "veo3.1-lite":
                         body["official_fallback"] = False
                 else:
-                    body = {
-                        "prompt": payload.prompt,
-                        "model": selected_model(payload.model, "doubao-seedance-2.0"),
-                        "duration": apimart_video_duration(payload.duration),
-                        "size": apimart_video_size(payload.aspect_ratio or payload.size),
-                        "resolution": payload.resolution or "480p",
-                    }
-                    if image_with_roles and video_payload:
+                    if is_minimax_h3:
+                        body = apimart_minimax_h3_video_body(payload, requested_model)
+                    else:
+                        body = {
+                            "prompt": payload.prompt,
+                            "model": selected_model(payload.model, "doubao-seedance-2.0"),
+                            "duration": apimart_video_duration(payload.duration),
+                            "size": apimart_video_size(payload.aspect_ratio or payload.size),
+                            "resolution": payload.resolution or "480p",
+                        }
+                    if image_with_roles and video_payload and not is_minimax_h3:
                         raise HTTPException(status_code=400, detail="APIMart Seedance 的 image_with_roles 不能和 video_urls 同时使用，请只保留图片首尾帧或参考视频其中一种。")
                     if image_with_roles:
                         body["image_with_roles"] = image_with_roles
@@ -15734,16 +16576,20 @@ async def canvas_video(payload: CanvasVideoRequest):
                         raise HTTPException(status_code=400, detail=f"参考音频无法转换为 APIMart 支持的地址：{invalid_video_image_preview(first_url)}\n原因：{first_reason}")
                     if audio_payload:
                         body["audio_urls"] = audio_payload
+                    if is_minimax_h3:
+                        validate_apimart_minimax_h3_media(
+                            image_with_roles, image_payload, video_payload, audio_payload
+                        )
                     if payload.trusted_asset:
                         img_count = len(body.get("image_urls") or []) or len(image_with_roles)
                         body["prompt"] = apply_trusted_asset_prompt_index(
                             body["prompt"], img_count, len(video_payload), len(audio_payload)
                         )
-                    if payload.seed is not None:
+                    if payload.seed is not None and not is_minimax_h3:
                         body["seed"] = payload.seed
-                    if payload.return_last_frame:
+                    if payload.return_last_frame and not is_minimax_h3:
                         body["return_last_frame"] = True
-                    if payload.generate_audio:
+                    if payload.generate_audio and not is_minimax_h3:
                         body["generate_audio"] = True
             else:
                 # 非 APIMart：data URL 方式（OpenAI / ComflyAI 接口）
@@ -15953,6 +16799,7 @@ async def canvas_video(payload: CanvasVideoRequest):
                     )
                 ) from last_json_error
             task_id = extract_task_id(raw) or raw.get("task_id") or raw.get("id")
+            remember_canvas_video_upstream_task(task_id, submit_url)
             result = raw
             if task_id and not video_output_urls(raw):
                 result = await wait_for_video_task(client, provider, task_id, submit_url)
@@ -16021,6 +16868,139 @@ async def canvas_video(payload: CanvasVideoRequest):
     except httpx.HTTPError as exc:
         log_net_error(f"视频 网络/TLS错误 provider={provider.get('id')} model={payload.model}", exc)
         raise HTTPException(status_code=502, detail=f"请求上游视频接口失败：{exc}") from exc
+
+async def finish_canvas_video_task_from_upstream(local_task_id: str, provider, upstream_task_id: str, submit_url: str = ""):
+    """Resume a paid upstream video task without submitting another generation."""
+    ACTIVE_CANVAS_VIDEO_TASKS.add(local_task_id)
+    update_canvas_video_task(local_task_id, status="waiting", error="")
+    try:
+        async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
+            result = await wait_for_video_task(client, provider, upstream_task_id, submit_url)
+        urls = video_output_urls(result)
+        if not urls:
+            raise HTTPException(status_code=502, detail=f"视频任务已完成但没有返回可用视频 URL（task_id={upstream_task_id}）")
+        local_urls = [await save_remote_video_to_output(url) for url in urls]
+        update_canvas_video_task(
+            local_task_id,
+            status="succeeded",
+            result={"videos": local_urls, "task_id": upstream_task_id},
+            error="",
+        )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        update_canvas_video_task(
+            local_task_id,
+            status="failed",
+            error=str(detail),
+            status_code=getattr(exc, "status_code", 500),
+            upstream_task_id=upstream_task_id,
+        )
+    finally:
+        ACTIVE_CANVAS_VIDEO_TASKS.discard(local_task_id)
+
+async def run_canvas_video_task(task_id: str, payload: CanvasVideoRequest):
+    ACTIVE_CANVAS_VIDEO_TASKS.add(task_id)
+    update_canvas_video_task(task_id, status="running", error="")
+    context_token = CURRENT_CANVAS_VIDEO_TASK_ID.set(task_id)
+    try:
+        result = await canvas_video(payload)
+        update_canvas_video_task(task_id, status="succeeded", result=result, error="")
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        with CANVAS_TASK_LOCK:
+            task = dict(CANVAS_TASKS.get(task_id) or {})
+        upstream_task_id = task.get("upstream_task_id") or getattr(exc, "upstream_task_id", "") or extract_task_id_from_text(detail)
+        update_canvas_video_task(
+            task_id,
+            status="failed",
+            error=str(detail),
+            status_code=getattr(exc, "status_code", 500),
+            upstream_task_id=upstream_task_id,
+        )
+    finally:
+        CURRENT_CANVAS_VIDEO_TASK_ID.reset(context_token)
+        ACTIVE_CANVAS_VIDEO_TASKS.discard(task_id)
+
+@app.post("/api/canvas-video-tasks")
+async def create_canvas_video_task(payload: CanvasVideoRequest):
+    task_id = f"canvas_video_{uuid.uuid4().hex}"
+    now = time.time()
+    with CANVAS_TASK_LOCK:
+        CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "online-video",
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "result": None,
+            "error": "",
+            "provider_id": payload.provider_id,
+            "model": payload.model,
+            "request": payload.dict(),
+            "upstream_task_id": "",
+            "submit_url": "",
+        }
+        persist_canvas_video_tasks_locked()
+    ACTIVE_CANVAS_VIDEO_TASKS.add(task_id)
+    asyncio.create_task(run_canvas_video_task(task_id, payload))
+    return {"task_id": task_id, "status": "queued", "kind": "video"}
+
+@app.get("/api/canvas-video-tasks/{task_id}")
+async def get_canvas_video_task(task_id: str):
+    with CANVAS_TASK_LOCK:
+        task = dict(CANVAS_TASKS.get(task_id) or {})
+    if not task or task.get("type") != "online-video":
+        raise HTTPException(status_code=404, detail="画布视频任务不存在或已过期")
+    if task.get("status") == "waiting" and task.get("upstream_task_id") and task_id not in ACTIVE_CANVAS_VIDEO_TASKS:
+        provider = get_api_provider(task.get("provider_id") or "")
+        ACTIVE_CANVAS_VIDEO_TASKS.add(task_id)
+        asyncio.create_task(finish_canvas_video_task_from_upstream(
+            task_id,
+            provider,
+            str(task.get("upstream_task_id")),
+            str(task.get("submit_url") or ""),
+        ))
+    return task
+
+async def query_video_task_once(provider, task_id: str):
+    base_url = video_api_root(provider)
+    task_urls = video_task_url_candidates(provider, base_url, task_id)
+    raw = None
+    last_error = None
+    async with httpx.AsyncClient(timeout=60) as client:
+        for task_url in task_urls:
+            try:
+                response = await client.get(task_url, headers=api_headers(provider=provider))
+                response.raise_for_status()
+                raw = response.json()
+                break
+            except Exception as exc:
+                last_error = exc
+        if raw is None:
+            if last_error:
+                raise last_error
+            raise HTTPException(status_code=502, detail=f"视频任务查询失败：{task_id}")
+    task_data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+    status = str(task_data.get("status") or task_data.get("task_status") or raw.get("status") or "").upper()
+    if status in VIDEO_TASK_FAILURE_STATUSES:
+        error = task_data.get("error") if isinstance(task_data.get("error"), dict) else {}
+        reason = task_data.get("fail_reason") or task_data.get("message") or error.get("message") or raw.get("message") or str(raw)
+        return {"status": "failed", "task_id": task_id, "error": humanize_video_task_failure(reason)}
+    urls = video_output_urls(raw)
+    if not urls:
+        return {"status": "running", "task_id": task_id, "message": "视频任务仍在生成中或结果地址尚未发布"}
+    local_urls = [await save_remote_video_to_output(url) for url in urls]
+    return {"status": "succeeded", "task_id": task_id, "videos": local_urls}
+
+@app.post("/api/video-task-query")
+async def video_task_query(payload: VideoTaskQueryRequest):
+    provider = get_api_provider(payload.provider_id)
+    try:
+        return await query_video_task_once(provider, str(payload.task_id or "").strip())
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=f"查询上游视频任务失败：{exc.response.text[:500]}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"查询上游视频任务失败：{exc}") from exc
 
 # --- Canvas LLM ---
 
@@ -17144,10 +18124,18 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
     kind = str(target_item.get("kind") or "image").lower()
     if kind not in ("image", "video", "audio"):
         kind = "image"
+    tos_url = ""
+    source_url = str(target_item.get("url") or "").strip()
+    tos_provider = provider if str(provider.get("id") or "") == "volcengine" else None
+    if source_url.startswith(("/assets/", "/output/")) and volcengine_tos_is_configured(tos_provider):
+        tos_url = await ensure_asset_item_tos_url(target_item, tos_provider)
+        if tos_url:
+            # TOS 关系独立于各平台注册任务；即使随后审核接口失败，也保留已完成的精确映射。
+            save_asset_library(lib)
     if platform == "apimart":
         project_name = str(payload.project_name or "default").strip() or "default"
         async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
-            public_url = await upload_media_for_apimart(client, provider, target_item.get("url") or "", kind)
+            public_url = await upload_media_for_apimart(client, provider, tos_url or source_url, kind)
         if not valid_apimart_video_image_input(public_url):
             reason = public_url[4:] if isinstance(public_url, str) and public_url.startswith("ERR:") else "无法获取公网可访问地址"
             raise HTTPException(status_code=400, detail=f"素材无法提交到 APIMart：{reason}\n请配置 PUBLIC_BASE_URL，或确认本地文件存在。")
@@ -17158,9 +18146,27 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
     elif platform == "volcengine":
         # 火山以 API 设置里配置的 ProjectName 为准（必须与视频生成 key 的项目一致）
         project_name = str(provider.get("volcengine_project_name") or VOLCENGINE_DEFAULT_PROJECT_NAME).strip() or VOLCENGINE_DEFAULT_PROJECT_NAME
-        public_url = volcengine_public_asset_url(target_item.get("url") or "")
+        public_url = tos_url or volcengine_public_asset_url(source_url)
+        cloud_error = ""
+        if public_url.startswith("ERR:") and kind in ("image", "video"):
+            local_path = output_file_from_url(source_url)
+            if local_path:
+                try:
+                    uploaded = await cached_public_media_upload(source_url, local_path)
+                    candidate = str((uploaded or {}).get("url") or "").strip()
+                    if candidate.startswith(("http://", "https://")):
+                        public_url = candidate
+                    else:
+                        cloud_error = "临时存储未返回可用的 http/https 地址"
+                except HTTPException as exc:
+                    cloud_error = str(exc.detail or exc)
+                except Exception as exc:
+                    cloud_error = str(exc)
         if public_url.startswith("ERR:"):
-            raise HTTPException(status_code=400, detail=public_url[4:])
+            detail = public_url[4:]
+            if cloud_error:
+                detail += f"\n自动上传公网临时存储也失败：{cloud_error}"
+            raise HTTPException(status_code=400, detail=detail)
         task_id = await submit_volcengine_avatar_asset(
             public_url, target_item.get("name") or "asset", kind,
             project_name=project_name, group_name=payload.group_name or "",
@@ -17183,6 +18189,19 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
     target_item["registrations"] = regs
     save_asset_library(lib)
     return {"library": lib, "item": target_item}
+
+
+@app.post("/api/asset-library/items/{item_id}/tos-sync")
+async def sync_asset_library_item_to_tos(item_id: str, payload: AssetAvatarRegisterRequest):
+    lib = load_asset_library()
+    target_item = find_asset_item_in_library(lib, item_id, payload.library_id)
+    if not target_item:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    if not volcengine_tos_is_configured():
+        raise HTTPException(status_code=400, detail="尚未配置火山 TOS Bucket。请先前往 API 平台管理 → 火山引擎 → TOS 公网素材。")
+    public_url = await ensure_asset_item_tos_url(target_item)
+    save_asset_library(lib)
+    return {"library": lib, "item": target_item, "public_url": public_url}
 
 @app.post("/api/asset-library/items/{item_id}/avatar-status")
 async def check_asset_library_avatar(item_id: str, payload: AssetAvatarRegisterRequest):

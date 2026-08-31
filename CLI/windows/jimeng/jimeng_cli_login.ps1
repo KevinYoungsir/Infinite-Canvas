@@ -31,6 +31,30 @@ function New-WslScriptFile {
     return $path
 }
 
+function Invoke-WslProbe {
+    param(
+        [string[]]$Arguments,
+        [switch]$CaptureOutput
+    )
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = @()
+        if ($CaptureOutput) {
+            $output = @(& wsl.exe @Arguments 2>$null | ForEach-Object { [string]$_ })
+        } else {
+            & wsl.exe @Arguments *> $null
+        }
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) { $exitCode = 0 }
+        return [pscustomobject]@{ ExitCode = [int]$exitCode; Output = $output }
+    } catch {
+        return [pscustomobject]@{ ExitCode = 1; Output = @() }
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+}
+
 function Invoke-WslScript {
     param(
         [string[]]$BaseArgs,
@@ -64,12 +88,21 @@ try {
         exit 1
     }
 
-    $distros = @()
-    try {
-        $distros = @(& wsl.exe -l -q 2>$null | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
-    } catch {
-        $distros = @()
+    $wslVersion = Invoke-WslProbe -Arguments @("--version")
+    if ($wslVersion.ExitCode -ne 0) {
+        Write-Host "wsl.exe exists, but the WSL platform is not installed or is waiting for a restart."
+        Write-Host "Run install_wsl_ubuntu.bat as Administrator, restart Windows if requested, then try again."
+        Pause-End
+        exit 1
     }
+
+    $distroResult = Invoke-WslProbe -Arguments @("-l", "-q") -CaptureOutput
+    if ($distroResult.ExitCode -ne 0) {
+        Write-Host "WSL is installed, but its distro list is not available yet. Restart Windows and try again."
+        Pause-End
+        exit 1
+    }
+    $distros = @($distroResult.Output | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
     if (-not $distros -or $distros.Count -eq 0) {
         Write-Host "WSL is installed, but no Linux distro is installed or initialized."
         Write-Host "Run install_wsl_ubuntu.bat first, or open an Administrator PowerShell and run:"
