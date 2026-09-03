@@ -101,6 +101,7 @@ body.smart-node-drag .image-wrap:hover .image-resolution-badge { opacity:0 !impo
 .image-node.prompt-smart-node.selected, .image-node.loop-smart-node.selected, .image-node.minimax-smart-node.selected { box-shadow:0 0 0 1px var(--strong), 0 14px 36px var(--shadow); }
 .prompt-smart-node .node-body, .loop-smart-node .node-body, .minimax-smart-node .node-body { align-items:stretch; justify-content:stretch; padding:0; height:100%; min-height:0; }
 .image-node.smart-group-member-node { padding:0; border-radius:12px; overflow:hidden; background:var(--card); border:1px solid rgba(148,163,184,.34); box-shadow:none; backdrop-filter:none; }
+.image-node.smart-group-media-member-node { display:none !important; }
 .theme-dark .image-node.smart-group-member-node { background:rgba(15,23,42,.42); border-color:rgba(148,163,184,.24); }
 .image-node.smart-group-member-node:hover,
 .image-node.smart-group-member-node.selected { border-color:var(--strong); box-shadow:0 0 0 1px var(--strong); }
@@ -659,6 +660,7 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .theme-dark .thumb-grid { scrollbar-color:rgba(148,163,184,.38) transparent; }
 .theme-dark .thumb-grid::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); }
 .thumb-item { position:relative; width:var(--thumb-size, 96px); height:var(--thumb-size, 96px); display:flex; align-items:center; justify-content:center; overflow:hidden; border:1px solid rgba(148,163,184,.38); border-radius:12px; background:var(--soft); transition:border-color .12s ease, box-shadow .14s ease; cursor:pointer; }
+.thumb-item.thumb-reordering, .smart-group-single-thumb.thumb-reordering { opacity:.72; border-color:var(--strong); box-shadow:0 0 0 2px color-mix(in srgb, var(--strong) 28%, transparent); cursor:grabbing; }
 .thumb-item:hover { z-index:1; }
 .thumb-item.image-selected { z-index:2; }
 .thumb-item img { width:auto; height:auto; max-width:100%; max-height:100%; object-fit:contain; object-position:center; border-radius:0; background:var(--soft); display:block; }
@@ -733,6 +735,9 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .image-node.dragging .node-port { opacity:0 !important; pointer-events:none !important; }
 .shell.port-dragging { cursor:crosshair !important; }
 .image-node.drop-target { outline:2px dashed var(--strong); outline-offset:4px; border-radius:18px; }
+.image-node.auto-group-candidate { outline:2px dashed color-mix(in srgb, var(--strong) 72%, transparent); outline-offset:5px; border-radius:18px; }
+.image-node.auto-group-armed { outline:2px solid var(--strong); outline-offset:7px; border-radius:18px; box-shadow:0 0 0 4px color-mix(in srgb, var(--strong) 14%, transparent), 0 16px 42px var(--shadow); }
+.image-node.auto-group-armed::after { content:"松开以成组"; position:absolute; left:50%; top:-34px; z-index:20; transform:translateX(-50%); padding:5px 9px; border-radius:999px; background:var(--strong); color:#fff; font-size:11px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none; box-shadow:0 8px 20px var(--shadow); }
 .image-node.drag-out { opacity:.5; }
 .run-time-pill { position:absolute; right:8px; top:8px; z-index:7; height:24px; padding:0 9px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background:rgba(37,99,235,.92); color:#fff; font-size:10.5px; font-weight:800; font-variant-numeric:tabular-nums; box-shadow:0 8px 18px rgba(15,23,42,.18); pointer-events:none; }
 .run-time-pill.done { background:#10b981; color:#fff; }

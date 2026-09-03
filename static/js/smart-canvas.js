@@ -90,6 +90,12 @@ let resizeState = null;
 let llmInstructionResizeState = null;
 let promptSplitResizeState = null;
 let thumbDragState = null;
+const THUMB_DRAG_START_PX = 5;
+const THUMB_DETACH_MARGIN_PX = 22;
+const AUTO_GROUP_ENTER_PX = 42;
+const AUTO_GROUP_RELEASE_PX = 58;
+const AUTO_GROUP_DWELL_MS = 380;
+const AUTO_GROUP_SWITCH_PX = 12;
 let uploadTargetId = '';
 let pendingGroupUploadPoint = null;
 let mentionRange = null;
@@ -214,6 +220,10 @@ function pushUndo(){
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
 }
 function performUndo(){
+    // An in-progress drag owns a pending snapshot rather than an undo entry.
+    // Cancel it first so Ctrl+Z cannot leave a stale drag/timer behind or pop
+    // an older, unrelated transaction while the current gesture is uncommitted.
+    if(cancelActiveSmartDrag({restorePending:true})) return;
     if(!undoStack.length){ toast(tr('smart.toastNoUndo')); return; }
     const snap = undoStack.pop();
     undoSuppressed = true;
@@ -1352,6 +1362,110 @@ function mediaNodeDefaultScale(node){
     if((node?.images || []).length > 1 && !Number.isFinite(Number(node?.scale))) return MEDIA_GROUP_DEFAULT_SCALE;
     return Number.isFinite(Number(node?.scale)) && Number(node.scale) > 0 ? Number(node.scale) : MEDIA_NODE_DEFAULT_SCALE;
 }
+function moveMediaItem(node, fromIndex, toIndex){
+    if(!node || !Array.isArray(node.images)) return false;
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    if(!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= node.images.length || to >= node.images.length || from === to) return false;
+    const [item] = node.images.splice(from, 1);
+    node.images.splice(to, 0, item);
+    return true;
+}
+function moveSmartGroupItem(group, fromIndex, toIndex){
+    if(!isSmartGroupNode(group) || !Array.isArray(group.items)) return false;
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    if(!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= group.items.length || to >= group.items.length || from === to) return false;
+    const [itemId] = group.items.splice(from, 1);
+    group.items.splice(to, 0, itemId);
+    return true;
+}
+function remapSelectedImageAfterMediaMove(nodeId, fromIndex, toIndex){
+    if(selectedImage.nodeId !== nodeId) return;
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    const selected = Number(selectedImage.index);
+    if(!Number.isInteger(from) || !Number.isInteger(to) || !Number.isInteger(selected) || from === to) return;
+    let next = selected;
+    if(selected === from) next = to;
+    else if(from < to && selected > from && selected <= to) next = selected - 1;
+    else if(to < from && selected >= to && selected < from) next = selected + 1;
+    selectedImage = {nodeId, index:next};
+}
+function remapSelectedImageAfterMediaRemoval(nodeId, removedIndex, remainingCount){
+    if(selectedImage.nodeId !== nodeId) return;
+    const removed = Number(removedIndex);
+    const selected = Number(selectedImage.index);
+    if(selected === removed){
+        selectedImage = {nodeId:'', index:-1};
+        return;
+    }
+    const next = selected > removed ? selected - 1 : selected;
+    selectedImage = next >= 0 && next < remainingCount ? {nodeId, index:next} : {nodeId:'', index:-1};
+}
+function mediaDragContainerElement(nodeId){
+    return world.querySelector(`.image-node[data-id="${CSS.escape(nodeId)}"]`);
+}
+function smartGroupMemberIdAtPoint(groupId, clientX, clientY){
+    const groupEl = mediaDragContainerElement(groupId);
+    if(!groupEl) return '';
+    const items = [...groupEl.querySelectorAll('.thumb-item,.smart-group-single-thumb')].filter(item => {
+        const memberId = item.dataset.refNodeId || '';
+        return memberId && memberId !== groupId;
+    });
+    if(!items.length) return '';
+    const hit = items.find(item => {
+        const rect = item.getBoundingClientRect();
+        return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    });
+    const nearest = hit || items.reduce((best, item) => {
+        const rect = item.getBoundingClientRect();
+        const score = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2));
+        return !best || score < best.score ? {item, score} : best;
+    }, null)?.item;
+    return nearest?.dataset.refNodeId || '';
+}
+function mediaDragPointOutsideContainer(nodeId, clientX, clientY, margin=THUMB_DETACH_MARGIN_PX){
+    const rect = mediaDragContainerElement(nodeId)?.getBoundingClientRect?.();
+    if(!rect) return false;
+    return clientX < rect.left - margin || clientX > rect.right + margin || clientY < rect.top - margin || clientY > rect.bottom + margin;
+}
+function mediaThumbIndexAtPoint(nodeId, clientX, clientY){
+    const nodeEl = mediaDragContainerElement(nodeId);
+    if(!nodeEl) return -1;
+    const items = [...nodeEl.querySelectorAll('.thumb-item,.smart-group-single-thumb')].filter(item => {
+        const ownerId = item.dataset.refNodeId || nodeId;
+        const index = Number(item.dataset.refImageIndex ?? item.dataset.imageIndex ?? -1);
+        return ownerId === nodeId && Number.isInteger(index) && index >= 0;
+    });
+    if(!items.length) return -1;
+    const hit = items.find(item => {
+        const rect = item.getBoundingClientRect();
+        return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    });
+    const nearest = hit || items.reduce((best, item) => {
+        const rect = item.getBoundingClientRect();
+        const score = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2));
+        return !best || score < best.score ? {item, score} : best;
+    }, null)?.item;
+    return Number(nearest?.dataset.refImageIndex ?? nearest?.dataset.imageIndex ?? -1);
+}
+function markActiveMediaThumb(nodeId, imageIndex){
+    const nodeEl = mediaDragContainerElement(nodeId);
+    if(!nodeEl) return;
+    [...nodeEl.querySelectorAll('.thumb-item,.smart-group-single-thumb')].forEach(item => {
+        const ownerId = item.dataset.refNodeId || nodeId;
+        const index = Number(item.dataset.refImageIndex ?? item.dataset.imageIndex ?? -1);
+        item.classList.toggle('thumb-reordering', ownerId === nodeId && index === Number(imageIndex));
+    });
+}
+function markActiveSmartGroupMember(groupId, memberId){
+    const groupEl = mediaDragContainerElement(groupId);
+    if(!groupEl) return;
+    groupEl.querySelectorAll('.thumb-item,.smart-group-single-thumb').forEach(item => {
+        item.classList.toggle('thumb-reordering', item.dataset.refNodeId === memberId);
+    });
+}
 function createImageNodeAt(point, images=[], options={}){
     const layout = imageLayout(images || [], mediaNodeDefaultScale({type:'smart-image', images:images || []}), {type:'smart-image', images:images || []});
     return createNode((point?.x || 0) - Math.round(layout.width / 2), (point?.y || 0) - Math.round(layout.height / 2), images, options);
@@ -1383,6 +1497,9 @@ function smartGroupCompactMembers(node){
 }
 function isSmartGroupCompactMember(node){
     return Boolean(node && (node.type === 'smart-prompt' || node.type === 'smart-loop') && smartGroupContainingNode(node.id));
+}
+function isSmartGroupMediaMember(node){
+    return Boolean(node && isSmartImageNode(node) && smartGroupContainingNode(node.id));
 }
 // 分组当前缩放比例（1=原始）。分组就像“画布中的画布”：缩放分组时组内所有成员（含提示词）整体等比缩放+
 // 重排。缩放过程用每次手势开始时的快照实时计算（见 resize 处理），不存持久基准，避免移动成员后再缩放位置回退。
@@ -1425,11 +1542,22 @@ function absorbImageNodeIntoSmartGroup(group, child){
     nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
     return true;
 }
-function addNodeToSmartGroup(group, child){
+function removeNodeFromOtherSmartGroups(nodeId, keepGroupId=''){
+    const changedGroups = [];
+    nodes.forEach(group => {
+        if(!isSmartGroupNode(group) || group.id === keepGroupId || !Array.isArray(group.items) || !group.items.includes(nodeId)) return;
+        group.items = group.items.filter(id => id !== nodeId);
+        changedGroups.push(group);
+    });
+    return changedGroups;
+}
+function addNodeToSmartGroup(group, child, options={}){
     if(!isSmartGroupNode(group) || !child || child.id === group.id) return false;
-    const items = Array.isArray(group.items) ? group.items.slice() : [];
+    const rawItems = Array.isArray(group.items) ? group.items.slice() : [];
+    const items = Array.from(new Set(rawItems));
     const zoom = smartGroupZoom(group);
     if(isSmartGroupNode(child)){
+        if(options.disallowGroupMerge) return false;
         // 把一个分组拖进另一个分组：吸收它的图片到本组网格，把它的非图片成员并入本组，然后删除被拖分组本体。
         const mergedImages = (child.images || []).map(img => stripImageGenerationMeta({...img}));
         group.images = [...(group.images || []), ...mergedImages];
@@ -1448,11 +1576,17 @@ function addNodeToSmartGroup(group, child){
         return true;
     }
     // 图片节点：收进卡片内的缩略图网格（不再作为画布上的独立节点）。
-    if(isSmartImageNode(child)) return absorbImageNodeIntoSmartGroup(group, child);
-    // 提示词 / 循环：仍作为画布上的成员节点。
-    if(items.includes(child.id)) return false;
+    if(isSmartImageNode(child) && !options.preserveImageNode) return absorbImageNodeIntoSmartGroup(group, child);
+    // 自动成组时图片保持独立节点身份；提示词 / 循环始终作为画布成员节点。
+    const oldGroups = removeNodeFromOtherSmartGroups(child.id, group.id);
+    if(items.includes(child.id)){
+        group.items = items;
+        oldGroups.forEach(oldGroup => arrangeSmartGroupMembers(oldGroup, {skipUndo:true, respectItemOrder:true}));
+        return oldGroups.length > 0 || items.length !== rawItems.length;
+    }
     group.items = [...items, child.id];
     scaleSmartGroupMemberToZoom(group, child, zoom);
+    oldGroups.forEach(oldGroup => arrangeSmartGroupMembers(oldGroup, {skipUndo:true, respectItemOrder:true}));
     return true;
 }
 // 找到把某个节点作为成员的智能分组（用于双击组内图片时按整组左右切换）。
@@ -1479,14 +1613,7 @@ function smartGroupImageRefs(group){
         if(item?.url) refs.push({nodeId:group.id, index, source:img, item});
     });
     const members = smartGroupMembers(group)
-        .filter(isSmartImageNode)
-        .slice()
-        .sort((a, b) => {
-            const ra = nodeRect(a), rb = nodeRect(b);
-            const dy = (Number(ra.y) || 0) - (Number(rb.y) || 0);
-            if(Math.abs(dy) > 24) return dy;
-            return (Number(ra.x) || 0) - (Number(rb.x) || 0);
-        });
+        .filter(isSmartImageNode);
     members.forEach(node => {
         (node.images || []).forEach((img, index) => {
             const item = imageForDisplay(img);
@@ -1582,7 +1709,7 @@ function arrangeSmartGroupMembers(group, options={}){
         const originY = (Number(group.y) || 0) + 16 + 28;
         group.w = Math.max(SMART_GROUP_MIN_WIDTH, Math.round(Number(layout.width) || SMART_GROUP_DEFAULT_WIDTH));
         group.h = Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(Number(layout.height) || SMART_GROUP_DEFAULT_HEIGHT));
-        const ordered = compactMembers.slice().sort((a, b) => {
+        const ordered = options.respectItemOrder ? compactMembers.slice() : compactMembers.slice().sort((a, b) => {
             const ra = nodeRect(a), rb = nodeRect(b);
             const dy = (Number(ra.y) || 0) - (Number(rb.y) || 0);
             if(Math.abs(dy) > 24) return dy;
@@ -1605,7 +1732,7 @@ function arrangeSmartGroupMembers(group, options={}){
     const members = smartGroupMembers(group);
     if(!members.length) return false;
     if(!options.skipUndo) pushUndo();
-    const ordered = members.slice().sort((a, b) => {
+    const ordered = options.respectItemOrder ? members.slice() : members.slice().sort((a, b) => {
         const ra = nodeRect(a), rb = nodeRect(b);
         const dy = (Number(ra.y) || 0) - (Number(rb.y) || 0);
         if(Math.abs(dy) > 24) return dy;
@@ -6117,7 +6244,7 @@ function createNode(x, y, images=[], options={}){
     nodes.push(node);
     if(options.select !== false) selectedId = node.id;
     render();
-    scheduleSave();
+    if(options.save !== false) scheduleSave();
     return node;
 }
 function createPromptNode(x, y, options={}){
@@ -8416,6 +8543,7 @@ function render(){
         const isMinimax = node.type === 'smart-minimax';
         const isSmartGroup = node.type === 'smart-group';
         const isCompactMember = isSmartGroupCompactMember(node);
+        const isMediaMember = isSmartGroupMediaMember(node);
         const isImageNode = node.type === 'smart-image' || !node.type;
         const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
@@ -8426,7 +8554,7 @@ function render(){
         const body = nodeBodyHtml(node, layout);
         const deleteBtn = (isGroup || isMinimax) ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
         const hint = isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isMinimax ? 'Timeline editing' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
-        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isMinimax ? 'minimax-smart-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
+        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isMinimax ? 'minimax-smart-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isMediaMember ? 'smart-group-media-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
 
             <div class="node-head"><div class="node-title">${title}</div><div class="node-actions">${deleteBtn}</div></div>
             ${!isEmpty && !isGroup && !isMinimax ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
@@ -9545,41 +9673,58 @@ function updatePortDragVisual(){
         targetNodeEl?.querySelector(`.node-port[data-port="${portDragState.hoverPort}"]`)?.classList.add('is-active');
     }
 }
+function resolvePortDragTarget(drag, e){
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const invalid = {targetId:'', targetPort:'', blank:false};
+    const targetForPort = port => {
+        const id = port.closest('.image-node')?.dataset.id;
+        return id && id !== drag.fromId ? {targetId:id, targetPort:port.dataset.port, blank:false} : invalid;
+    };
+    const exactPort = hit?.closest?.('.node-port');
+    if(exactPort) return targetForPort(exactPort);
+    if(hit?.closest?.('.composer,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.log-modal,.shortcut-modal,.image-edit-modal,.smart-minimap,.smart-node-floating-menu,.floating-node-actions,.node-actions,.node-resize-handle,.mini-x')) return invalid;
+    const nodeEl = hit?.closest?.('.image-node');
+    if(nodeEl){
+        if(!nodeEl.dataset.id || nodeEl.dataset.id === drag.fromId) return invalid;
+        const rect = nodeEl.getBoundingClientRect();
+        return {targetId:nodeEl.dataset.id, targetPort:e.clientX - rect.left < rect.width / 2 ? 'in' : 'out', blank:false};
+    }
+    const blank = hit === world || hit === shell || Boolean(hit?.closest?.('svg.connection-layer'));
+    if(!blank) return invalid;
+    // A small screen-space tolerance protects visible port-edge misses without
+    // treating toolbars/overlays or a stale hover target as blank canvas.
+    let nearest = null;
+    let distance = 8;
+    world.querySelectorAll('.node-port').forEach(port => {
+        const rect = port.getBoundingClientRect();
+        if(!rect.width || !rect.height) return;
+        const dx = Math.max(rect.left - e.clientX, 0, e.clientX - rect.right);
+        const dy = Math.max(rect.top - e.clientY, 0, e.clientY - rect.bottom);
+        const gap = Math.hypot(dx, dy);
+        if(gap <= distance){ nearest = port; distance = gap; }
+    });
+    return nearest ? targetForPort(nearest) : {targetId:'', targetPort:'', blank:true};
+}
 function handlePortDrop(drag, e){
-    const {targetId, targetPort, hit} = (() => {
-        const hitEl = document.elementFromPoint(e.clientX, e.clientY);
-        const portEl = hitEl?.closest?.('.node-port');
-        const nodeEl = portEl?.closest?.('.image-node') || hitEl?.closest?.('.image-node');
-        let id = '', port = '';
-        if(nodeEl && nodeEl.dataset.id && nodeEl.dataset.id !== drag.fromId){
-            id = nodeEl.dataset.id;
-            if(portEl){
-                port = portEl.dataset.port;
-            } else {
-                const rect = nodeEl.getBoundingClientRect();
-                port = (e.clientX - rect.left) < rect.width / 2 ? 'in' : 'out';
-            }
-        }
-        return {targetId:id, targetPort:port, hit:hitEl};
-    })();
+    const {targetId, targetPort, blank} = resolvePortDragTarget(drag, e);
     if(targetId){
         const compatible = (drag.fromPort === 'out' && targetPort === 'in') || (drag.fromPort === 'in' && targetPort === 'out');
-        if(!compatible){ discardPendingUndo(); render(); return; }
+        if(!compatible){ discardPendingUndo(); render(); return false; }
         const fromId = drag.fromPort === 'out' ? drag.fromId : targetId;
         const toId = drag.fromPort === 'out' ? targetId : drag.fromId;
         if(connectInputNode(fromId, toId)){
             commitPendingUndo();
             render();
             scheduleSave();
+            return true;
         } else {
             discardPendingUndo();
             render();
+            return false;
         }
-        return;
     }
-    if(!drag.moved){ discardPendingUndo(); render(); return; }
-    if(hit?.closest?.('.composer,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.log-modal,.shortcut-modal,.image-edit-modal,.smart-minimap')){
-        discardPendingUndo(); render(); return;
+    if(!drag.moved || !blank || !nodes.some(node => node.id === drag.fromId)){
+        discardPendingUndo(); render(); return false;
     }
     const p = screenToWorld(e);
     undoSuppressed = true;
@@ -9591,6 +9736,20 @@ function handlePortDrop(drag, e){
     commitPendingUndo();
     render();
     scheduleSave();
+    return true;
+}
+function finalizePortDrag(e){
+    if(!portDragState) return false;
+    const drag = portDragState;
+    let committed = false;
+    try {
+        committed = handlePortDrop(drag, e);
+    } finally {
+        portDragState = null;
+        shell.classList.remove('port-dragging');
+        clearPortDragVisual();
+    }
+    return committed;
 }
 function pickMediaForSmartNode(nodeId){
     const input = document.createElement('input');
@@ -9844,19 +10003,52 @@ function bindNodeEvents(){
         });
         el.querySelectorAll('.thumb-item,.smart-group-single-thumb').forEach(item => {
             item.addEventListener('mousedown', e => {
-                if(e.target.closest('video,audio')) return;
-                if(e.button !== 0 || e.target.closest('.mini-x')) return;
+                // 播放按钮、删除按钮和已经展开的原生媒体控件保留自己的点击/播放行为；
+                // 未播放的视频缩略图和图片一样，通过移动阈值区分点击与排序。
+                if(e.target.closest('audio, video[data-inline-video-active="1"]')) return;
+                if(e.button !== 0 || e.target.closest('.mini-x,.image-name-badge,.smart-video-play,button,input,select,textarea')) return;
                 if(e.detail >= 2) return;
                 const node = nodes.find(n => n.id === id);
                 const refNodeId = item.dataset.refNodeId || '';
-                if(refNodeId && refNodeId !== id) return;
                 if(!node) return;
-                const imgIndex = Number(item.dataset.imageIndex || 0);
+                const imgIndex = Number(item.dataset.refImageIndex ?? item.dataset.imageIndex ?? 0);
+                if(isSmartGroupNode(node) && refNodeId && refNodeId !== id){
+                    const member = nodes.find(n => n.id === refNodeId);
+                    const groupIndex = Array.isArray(node.items) ? node.items.indexOf(refNodeId) : -1;
+                    if(!member || !isSmartImageNode(member) || groupIndex < 0) return;
+                    e.preventDefault(); e.stopPropagation();
+                    thumbDragState = {
+                        kind:'group-member',
+                        nodeId:member.id,
+                        containerId:node.id,
+                        groupId:node.id,
+                        mediaIndex:imgIndex,
+                        originalIndex:groupIndex,
+                        currentIndex:groupIndex,
+                        startX:e.clientX,
+                        startY:e.clientY,
+                        mode:'pending',
+                        changed:false
+                    };
+                    capturePendingUndo();
+                    return;
+                }
+                if(refNodeId && refNodeId !== id) return;
                 if(isSmartGroupNode(node)){
                     if(!node.images?.[imgIndex]) return;
                 } else if((node.images || []).length <= 1) return;
                 e.preventDefault(); e.stopPropagation();
-                thumbDragState = {nodeId:id, imgIndex, startX:e.clientX, startY:e.clientY, detached:false};
+                thumbDragState = {
+                    kind:'media',
+                    nodeId:id,
+                    containerId:id,
+                    originalIndex:imgIndex,
+                    currentIndex:imgIndex,
+                    startX:e.clientX,
+                    startY:e.clientY,
+                    mode:'pending',
+                    changed:false
+                };
                 capturePendingUndo();
             });
         });
@@ -9905,7 +10097,7 @@ function bindNodeEvents(){
                 const n = nodes.find(x => x.id === dragId);
                 return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
             }).filter(Boolean);
-            dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey)};
+            dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey), autoGroup:createAutoGroupState()};
             document.body.classList.add('smart-node-drag');
             capturePendingUndo();
         };
@@ -9951,6 +10143,152 @@ function rectOverlapNode(draggedId, x, y, w, h, excludeIds=[]){
         if(cx >= r.x && cx <= r.x + r.width && cy >= r.y && cy <= r.y + r.height) return n;
     }
     return null;
+}
+function rectDistance(a, b){
+    const dx = Math.max(
+        (Number(b?.x) || 0) - ((Number(a?.x) || 0) + (Number(a?.width) || 0)),
+        (Number(a?.x) || 0) - ((Number(b?.x) || 0) + (Number(b?.width) || 0)),
+        0
+    );
+    const dy = Math.max(
+        (Number(b?.y) || 0) - ((Number(a?.y) || 0) + (Number(a?.height) || 0)),
+        (Number(a?.y) || 0) - ((Number(b?.y) || 0) + (Number(b?.height) || 0)),
+        0
+    );
+    return Math.hypot(dx, dy);
+}
+function createAutoGroupState(){
+    return {targetId:'', mode:'none', enteredAt:0, armed:false, timerId:null};
+}
+function isUniversalAutoGroupNode(node){
+    if(!node || node.id === SMART_LOG_PREVIEW_NODE_ID || isHistoryGroupNode(node) || isSmartGroupNode(node) || node.type === 'smart-minimax') return false;
+    return isSmartImageNode(node) || node.type === 'smart-prompt' || node.type === 'smart-loop';
+}
+function isUniversalAutoGroupTarget(node, draggedNode, excluded){
+    if(!node || !draggedNode || node.id === draggedNode.id || excluded.has(node.id) || node.id === SMART_LOG_PREVIEW_NODE_ID || isHistoryGroupNode(node) || node.type === 'smart-minimax') return false;
+    if(isSmartGroupNode(node)) return !(node.items || []).includes(draggedNode.id);
+    if(!isUniversalAutoGroupNode(node)) return false;
+    // 已在分组内的普通成员由它的容器代表，避免对着成员缩略图创建嵌套分组。
+    return !smartGroupContainingNode(node.id);
+}
+function autoGroupCandidateRecord(draggedNode, target, excluded){
+    if(!isUniversalAutoGroupTarget(target, draggedNode, excluded)) return null;
+    const draggedRect = nodeRect(draggedNode);
+    const targetRect = nodeRect(target);
+    const edgeDistance = rectDistance(draggedRect, targetRect);
+    const draggedCx = draggedRect.x + draggedRect.width / 2;
+    const draggedCy = draggedRect.y + draggedRect.height / 2;
+    const targetCx = targetRect.x + targetRect.width / 2;
+    const targetCy = targetRect.y + targetRect.height / 2;
+    const centerDistance = Math.hypot(draggedCx - targetCx, draggedCy - targetCy);
+    const detachedBonus = dragState?.detachedFrom?.groupId === target.id ? 6 / Math.max(0.05, safeScale(viewport.scale)) : 0;
+    return {node:target, edgeDistance, score:edgeDistance + centerDistance * 0.04 - detachedBonus};
+}
+function autoGroupCandidateForDraggedNode(draggedNode, currentTargetId=dragState?.autoGroup?.targetId || ''){
+    if(portDragState || dragState?.ctrlGroup || !isUniversalAutoGroupNode(draggedNode)) return null;
+    const scale = Math.max(0.05, safeScale(viewport.scale));
+    const enterDistance = AUTO_GROUP_ENTER_PX / scale;
+    const releaseDistance = AUTO_GROUP_RELEASE_PX / scale;
+    const switchMargin = AUTO_GROUP_SWITCH_PX / scale;
+    const excluded = new Set([draggedNode.id, ...(dragState?.groupIds || [])]);
+    const records = nodes
+        .map(target => autoGroupCandidateRecord(draggedNode, target, excluded))
+        .filter(record => record && record.edgeDistance <= enterDistance)
+        .sort((a, b) => a.score - b.score || nodes.indexOf(b.node) - nodes.indexOf(a.node));
+    const best = records[0] || null;
+    const currentNode = currentTargetId ? nodes.find(n => n.id === currentTargetId) : null;
+    const current = currentNode ? autoGroupCandidateRecord(draggedNode, currentNode, excluded) : null;
+    if(current && current.edgeDistance <= releaseDistance){
+        if(!best || best.node.id === current.node.id || best.score + switchMargin >= current.score) return current.node;
+    }
+    return best?.node || null;
+}
+function clearAutoGroupHighlight(){
+    world.querySelectorAll('.image-node.auto-group-candidate,.image-node.auto-group-armed').forEach(el => el.classList.remove('auto-group-candidate','auto-group-armed'));
+}
+function setAutoGroupHighlight(targetId, armed=false){
+    clearAutoGroupHighlight();
+    if(!targetId) return;
+    const el = world.querySelector(`.image-node[data-id="${CSS.escape(targetId)}"]`);
+    if(el) el.classList.add(armed ? 'auto-group-armed' : 'auto-group-candidate');
+}
+function cancelAutoGroupIntent(state=dragState?.autoGroup){
+    if(state?.timerId != null) clearTimeout(state.timerId);
+    if(state){
+        state.targetId = '';
+        state.mode = 'none';
+        state.enteredAt = 0;
+        state.armed = false;
+        state.timerId = null;
+    }
+    clearAutoGroupHighlight();
+}
+function cancelActiveSmartDrag(options={}){
+    if(!dragState && !thumbDragState && !portDragState) return false;
+    const snapshot = options.restorePending === false ? null : pendingUndoSnapshot;
+    cancelAutoGroupIntent(dragState?.autoGroup);
+    dragState = null;
+    thumbDragState = null;
+    portDragState = null;
+    loopInsertPreview = null;
+    document.body.classList.remove('smart-node-drag');
+    shell.classList.remove('port-dragging');
+    clearPortDragVisual();
+    clearDropHighlight();
+    setAssetDragOver(false);
+    if(snapshot){
+        nodes = snapshot.nodes;
+        if(canvas) canvas.connections = snapshot.connections;
+        selectedId = snapshot.selectedId;
+        selectedIds = snapshot.selectedIds;
+        selectedImage = snapshot.selectedImage;
+    }
+    discardPendingUndo();
+    if(options.render !== false) render();
+    return true;
+}
+function armAutoGroupIntent(activeDrag, state, targetId){
+    if(!dragState || dragState !== activeDrag || dragState.autoGroup !== state || state.targetId !== targetId) return;
+    state.timerId = null;
+    const draggedNode = nodes.find(n => n.id === dragState.id);
+    const candidate = autoGroupCandidateForDraggedNode(draggedNode, targetId);
+    if(!candidate || candidate.id !== targetId) return;
+    state.mode = 'armed';
+    state.armed = true;
+    setAutoGroupHighlight(targetId, true);
+}
+function updateAutoGroupIntent(draggedNode){
+    if(!dragState) return null;
+    const state = dragState.autoGroup || (dragState.autoGroup = createAutoGroupState());
+    const singleDrag = (dragState.group || []).length === 1;
+    if(dragState.ctrlGroup || !singleDrag || !isUniversalAutoGroupNode(draggedNode)){
+        cancelAutoGroupIntent(state);
+        return null;
+    }
+    const candidate = autoGroupCandidateForDraggedNode(draggedNode, state.targetId);
+    if(!candidate){
+        cancelAutoGroupIntent(state);
+        return null;
+    }
+    if(candidate.id !== state.targetId){
+        if(state.timerId != null) clearTimeout(state.timerId);
+        state.targetId = candidate.id;
+        state.mode = 'candidate';
+        state.enteredAt = Date.now();
+        state.armed = false;
+        const activeDrag = dragState;
+        state.timerId = setTimeout(() => armAutoGroupIntent(activeDrag, state, candidate.id), AUTO_GROUP_DWELL_MS);
+    } else if(!state.armed && Date.now() - state.enteredAt >= AUTO_GROUP_DWELL_MS){
+        armAutoGroupIntent(dragState, state, candidate.id);
+    }
+    setAutoGroupHighlight(candidate.id, state.armed);
+    return candidate;
+}
+function armedAutoGroupTargetForDraggedNode(draggedNode){
+    const state = dragState?.autoGroup;
+    if(!state?.armed || !state.targetId || !isUniversalAutoGroupNode(draggedNode)) return null;
+    const candidate = autoGroupCandidateForDraggedNode(draggedNode, state.targetId);
+    return candidate?.id === state.targetId ? candidate : null;
 }
 function dragConnectTargetFor(sourceNode, point=lastMouseWorld){
     if(!sourceNode || (dragState?.group || []).length > 1) return null;
@@ -10002,6 +10340,7 @@ function setDropHighlight(targetId){
     if(el) el.classList.add('drop-target');
 }
 function deleteNode(id){
+    cancelActiveSmartDrag({restorePending:true, render:false});
     pushUndo();
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
@@ -10020,6 +10359,7 @@ function deleteNode(id){
     scheduleSave();
 }
 function clearNodeMediaBeforeDelete(id){
+    cancelActiveSmartDrag({restorePending:true, render:false});
     const node = nodes.find(n => n.id === id);
     if(!node || (node.type && node.type !== 'smart-image')) return false;
     const hadMedia = Boolean((node.images || []).length || node.pending);
@@ -17263,11 +17603,15 @@ function finishSelection(event){
     render();
     setTimeout(() => { selectionJustFinished = false; }, 0);
 }
-function groupSelectedNodes(){
-    const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
-    const selected = ids.map(id => nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
-    if(selected.length < 1){ toast('请选择要放入分组的节点'); return; }
-    pushUndo();
+function createSmartGroupFromNodes(nodesToGroup, options={}){
+    const seen = new Set();
+    const selected = (nodesToGroup || []).map(item => typeof item === 'string' ? nodes.find(n => n.id === item) : item).filter(node => {
+        if(!node || seen.has(node.id) || (!options.allowSmartGroups && isSmartGroupNode(node))) return false;
+        seen.add(node.id);
+        return true;
+    });
+    if(!selected.length) return null;
+    if(!options.skipUndo) pushUndo();
     const rects = selected.map(nodeRect);
     const minX = Math.min(...rects.map(r => r.x));
     const minY = Math.min(...rects.map(r => r.y));
@@ -17286,14 +17630,42 @@ function groupSelectedNodes(){
         created_at:Date.now()
     };
     nodes.push(group);
-    // 图片成员吸收进分组网格，提示词/循环作为成员节点；随后自动整理。
-    selected.forEach(node => addNodeToSmartGroup(group, node));
-    arrangeSmartGroupMembers(group, {skipUndo:true});
+    selected.forEach(node => addNodeToSmartGroup(group, node, {
+        preserveImageNode:Boolean(options.preserveImageNodes),
+        disallowGroupMerge:Boolean(options.disallowGroupMerge)
+    }));
+    arrangeSmartGroupMembers(group, {skipUndo:true, respectItemOrder:Boolean(options.respectItemOrder)});
     selectedIds = [];
-    selectedId = group.id;
+    if(options.select !== false) selectedId = group.id;
     selectedImage = {nodeId:'', index:-1};
-    render();
-    scheduleSave();
+    if(options.render !== false) render();
+    if(options.save !== false) scheduleSave();
+    return group;
+}
+function groupSelectedNodes(){
+    const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
+    const selected = ids.map(id => nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
+    if(selected.length < 1){ toast('请选择要放入分组的节点'); return; }
+    return createSmartGroupFromNodes(selected);
+}
+function commitUniversalAutoGroup(draggedNode, target){
+    if(!isUniversalAutoGroupNode(draggedNode) || !target || draggedNode.id === target.id) return null;
+    if(isSmartGroupNode(target)){
+        return addDraggedNodesToSmartGroup([draggedNode], target, {
+            preserveImageNodes:true,
+            disallowGroupMerge:true,
+            respectItemOrder:true
+        }) ? target : null;
+    }
+    if(!isUniversalAutoGroupNode(target) || smartGroupContainingNode(target.id)) return null;
+    return createSmartGroupFromNodes([target, draggedNode], {
+        skipUndo:true,
+        preserveImageNodes:true,
+        disallowGroupMerge:true,
+        respectItemOrder:true,
+        render:false,
+        save:false
+    });
 }
 function ungroupNode(groupId){
     const group = nodes.find(n => n.id === groupId);
@@ -17424,17 +17796,20 @@ function addDraggedNodeToSmartGroup(draggedNode, group){
     return addDraggedNodesToSmartGroup(draggedNode ? [draggedNode] : [], group);
 }
 // 把一个或多个被拖动的节点批量加入目标分组（支持多选拖入）。入组后只整理一次并选中目标分组。
-function addDraggedNodesToSmartGroup(draggedNodes, group){
+function addDraggedNodesToSmartGroup(draggedNodes, group, options={}){
     if(!group || !isSmartGroupNode(group)) return false;
     const list = (draggedNodes || []).filter(n => n && n.id !== group.id);
     if(!list.length) return false;
     let added = false;
     list.forEach(n => {
-        if(addNodeToSmartGroup(group, n)) added = true;
+        if(addNodeToSmartGroup(group, n, {
+            preserveImageNode:Boolean(options.preserveImageNodes),
+            disallowGroupMerge:Boolean(options.disallowGroupMerge)
+        })) added = true;
     });
     if(!added) return false;
     // 提示词/循环成员入组后自动整理成网格（图片已收进卡片网格，自动平铺）。
-    arrangeSmartGroupMembers(group, {skipUndo:true});
+    arrangeSmartGroupMembers(group, {skipUndo:true, respectItemOrder:Boolean(options.respectItemOrder)});
     selectedIds = [];
     // 图片被吸收进分组（原节点已删除），统一选中目标分组；仅当单个提示词/循环节点拖入时保持选中它。
     const survivingSingle = list.length === 1 && nodes.some(n => n.id === list[0].id) ? list[0].id : '';
@@ -17600,21 +17975,9 @@ window.onmousemove = e => {
         const p = screenToWorld(e);
         portDragState.currentWorld = p;
         portDragState.moved = true;
-        const hitEl = document.elementFromPoint(e.clientX, e.clientY);
-        const portEl = hitEl?.closest?.('.node-port');
-        const nodeEl = portEl?.closest?.('.image-node') || hitEl?.closest?.('.image-node');
-        let targetId = '', targetPort = '';
-        if(nodeEl && nodeEl.dataset.id && nodeEl.dataset.id !== portDragState.fromId){
-            targetId = nodeEl.dataset.id;
-            if(portEl){
-                targetPort = portEl.dataset.port;
-            } else {
-                const rect = nodeEl.getBoundingClientRect();
-                targetPort = (e.clientX - rect.left) < rect.width / 2 ? 'in' : 'out';
-            }
-            const compatible = (portDragState.fromPort === 'out' && targetPort === 'in') || (portDragState.fromPort === 'in' && targetPort === 'out');
-            if(!compatible){ targetId = ''; targetPort = ''; }
-        }
+        let {targetId, targetPort} = resolvePortDragTarget(portDragState, e);
+        const compatible = (portDragState.fromPort === 'out' && targetPort === 'in') || (portDragState.fromPort === 'in' && targetPort === 'out');
+        if(!compatible){ targetId = ''; targetPort = ''; }
         portDragState.hoverTargetId = targetId;
         portDragState.hoverPort = targetPort;
         updatePortDragVisual();
@@ -17785,35 +18148,110 @@ window.onmousemove = e => {
         const dx = e.clientX - thumbDragState.startX;
         const dy = e.clientY - thumbDragState.startY;
         const source = nodes.find(n => n.id === thumbDragState.nodeId);
-        if(!thumbDragState.detached && Math.abs(dx) + Math.abs(dy) > 6){
-            const canDetachThumb = source && (isSmartGroupNode(source) ? (source.images || []).length >= 1 : (source.images || []).length > 1);
-            if(canDetachThumb){
-                const img = source.images[thumbDragState.imgIndex];
-                if(img){
-                    commitPendingUndo();
-                    undoSuppressed = true;
-                    applyNodeMetaToImage(img, source);
-                    source.images.splice(thumbDragState.imgIndex, 1);
-                    if(isSmartGroupNode(source)){
-                        arrangeSmartGroupMembers(source, {skipUndo:true, syncDom:true});
-                    } else if(source.images.length <= 1){
-                        source.title = 'Image';
-                        delete source.w; delete source.h;
-                        inheritNodeMetaFromImage(source);
-                    }
-                    const point = screenToWorld(e);
-                    selectedId = '';
-                    selectedImage = {nodeId:'', index:-1};
-                    const newNode = createImageNodeAt(point, [img], {select:false, skipUndo:true});
-                    undoSuppressed = false;
-                    dragState = {id:newNode.id, startX:e.clientX, startY:e.clientY, ox:newNode.x, oy:newNode.y, thumbDetached:true};
-                    thumbDragState.detached = true;
-                    render();
-                }
-            }
+        if(!source){
+            discardPendingUndo();
+            thumbDragState = null;
+            return;
         }
-        if(thumbDragState.detached) thumbDragState = null;
-        else return;
+        if(thumbDragState.mode === 'pending' && Math.hypot(dx, dy) < THUMB_DRAG_START_PX) return;
+        e.preventDefault();
+        clearImageClickTimer();
+        suppressImageClickUntil = Date.now() + 260;
+        if(thumbDragState.kind === 'group-member'){
+            const group = nodes.find(n => n.id === thumbDragState.groupId);
+            if(!isSmartGroupNode(group) || !group.items?.includes(source.id)){
+                discardPendingUndo();
+                thumbDragState = null;
+                return;
+            }
+            const outsideGroup = mediaDragPointOutsideContainer(group.id, e.clientX, e.clientY);
+            if(outsideGroup){
+                thumbDragState.mode = 'detach';
+                group.items = group.items.filter(id => id !== source.id);
+                arrangeSmartGroupMembers(group, {skipUndo:true, respectItemOrder:true});
+                const point = screenToWorld(e);
+                const rect = nodeRect(source);
+                source.x = Math.round(point.x - rect.width / 2);
+                source.y = Math.round(point.y - rect.height / 2);
+                selectedIds = [];
+                selectedId = source.id;
+                render();
+                dragState = {
+                    id:source.id,
+                    startX:e.clientX,
+                    startY:e.clientY,
+                    ox:source.x,
+                    oy:source.y,
+                    group:[{id:source.id, ox:source.x, oy:source.y}],
+                    groupIds:[source.id],
+                    ctrlGroup:false,
+                    thumbDetached:true,
+                    detachedFrom:{groupId:group.id, index:thumbDragState.originalIndex},
+                    autoGroup:createAutoGroupState()
+                };
+                thumbDragState = null;
+                document.body.classList.add('smart-node-drag');
+                return;
+            }
+            thumbDragState.mode = 'reorder';
+            const targetMemberId = smartGroupMemberIdAtPoint(group.id, e.clientX, e.clientY);
+            const toIndex = group.items.indexOf(targetMemberId);
+            if(toIndex >= 0 && moveSmartGroupItem(group, thumbDragState.currentIndex, toIndex)){
+                thumbDragState.currentIndex = group.items.indexOf(source.id);
+                thumbDragState.changed = true;
+                arrangeSmartGroupMembers(group, {skipUndo:true, respectItemOrder:true});
+                render();
+            }
+            markActiveSmartGroupMember(group.id, source.id);
+            return;
+        }
+        const outsideContainer = mediaDragPointOutsideContainer(thumbDragState.containerId || source.id, e.clientX, e.clientY);
+        const canDetachThumb = isSmartGroupNode(source) ? (source.images || []).length >= 1 : (source.images || []).length > 1;
+        if(outsideContainer && canDetachThumb){
+            thumbDragState.mode = 'detach';
+            const detachIndex = thumbDragState.currentIndex;
+            const img = source.images[detachIndex];
+            if(img){
+                applyNodeMetaToImage(img, source);
+                source.images.splice(detachIndex, 1);
+                remapSelectedImageAfterMediaRemoval(source.id, detachIndex, source.images.length);
+                if(isSmartGroupNode(source)){
+                    arrangeSmartGroupMembers(source, {skipUndo:true, syncDom:true});
+                } else if(source.images.length <= 1){
+                    source.title = 'Image';
+                    delete source.w; delete source.h;
+                    inheritNodeMetaFromImage(source);
+                }
+                const point = screenToWorld(e);
+                selectedId = '';
+                const newNode = createImageNodeAt(point, [img], {select:false, skipUndo:true, save:false});
+                dragState = {
+                    id:newNode.id,
+                    startX:e.clientX,
+                    startY:e.clientY,
+                    ox:newNode.x,
+                    oy:newNode.y,
+                    group:[{id:newNode.id, ox:newNode.x, oy:newNode.y}],
+                    groupIds:[newNode.id],
+                    ctrlGroup:false,
+                    thumbDetached:true,
+                    autoGroup:createAutoGroupState()
+                };
+                thumbDragState = null;
+                document.body.classList.add('smart-node-drag');
+            }
+            return;
+        }
+        thumbDragState.mode = 'reorder';
+        const toIndex = mediaThumbIndexAtPoint(source.id, e.clientX, e.clientY);
+        if(toIndex >= 0 && moveMediaItem(source, thumbDragState.currentIndex, toIndex)){
+            remapSelectedImageAfterMediaMove(source.id, thumbDragState.currentIndex, toIndex);
+            thumbDragState.currentIndex = toIndex;
+            thumbDragState.changed = true;
+            render();
+        }
+        markActiveMediaThumb(source.id, thumbDragState.currentIndex);
+        return;
     }
     if(panState){
         const dx = e.clientX - panState.startX;
@@ -17826,7 +18264,7 @@ window.onmousemove = e => {
     }
     if(!dragState) return;
     const node = nodes.find(n => n.id === dragState.id);
-    if(!node) return;
+    if(!node){ cancelActiveSmartDrag({restorePending:false}); return; }
     const moveDx = (e.clientX - dragState.startX) / viewport.scale;
     const moveDy = (e.clientY - dragState.startY) / viewport.scale;
     (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
@@ -17840,6 +18278,7 @@ window.onmousemove = e => {
         if(hit && assetPanel?.contains(hit)){
             setAssetDragOver(true);
             clearDropHighlight();
+            cancelAutoGroupIntent();
             setAssetDragOver(true);
             return;
         }
@@ -17855,7 +18294,7 @@ window.onmousemove = e => {
     setDropHighlight(target?.id || '');
     moveNodeElementsDuringDrag();
     updateLoopInsertPreview();
-    if(target) setDropHighlight(target.id);
+    updateAutoGroupIntent(node);
 };
 window.onmouseup = e => {
     document.body.classList.remove('smart-node-drag');
@@ -17869,11 +18308,7 @@ window.onmouseup = e => {
         return;
     }
     if(portDragState){
-        const drag = portDragState;
-        portDragState = null;
-        shell.classList.remove('port-dragging');
-        clearPortDragVisual();
-        handlePortDrop(drag, e);
+        finalizePortDrag(e);
         return;
     }
     if(promptResizeState){ promptResizeState = null; scheduleSave(); }
@@ -17922,8 +18357,16 @@ window.onmouseup = e => {
         scheduleSave();
     }
     if(thumbDragState){
-        if(!thumbDragState.detached) discardPendingUndo();
+        const changed = thumbDragState.mode === 'reorder' && thumbDragState.changed;
+        if(changed) commitPendingUndo();
+        else discardPendingUndo();
         thumbDragState = null;
+        if(changed){
+            suppressNodeClickUntil = Date.now() + 180;
+            suppressImageClickUntil = Date.now() + 260;
+            render();
+            scheduleSave();
+        }
     }
     if(panState) {
         panState = null;
@@ -17949,6 +18392,7 @@ window.onmouseup = e => {
             setAssetDragOver(false);
             discardPendingUndo();
             clearDropHighlight();
+            cancelAutoGroupIntent();
             dragState = null;
             document.body.classList.remove('smart-node-drag');
             render();
@@ -17966,7 +18410,10 @@ window.onmouseup = e => {
         // 拖入分组：单个节点、多选（批量拖入）或整个分组（其成员会并入目标分组）都允许并入主分组下的目标分组。
         // 目标分组由主拖动节点的中心命中决定；smartGroupTargetForDraggedNode 已排除正在被拖动的节点/分组。
         const draggedNodes = (dragState.group || []).map(item => nodes.find(n => n.id === item.id)).filter(Boolean);
-        const smartGroupTarget = draggedNode ? smartGroupTargetForDraggedNode(draggedNode) : null;
+        const smartGroupTarget = draggedNode && dragState.ctrlGroup ? smartGroupTargetForDraggedNode(draggedNode) : null;
+        const armedAutoGroupTarget = draggedNode && !dragState.ctrlGroup ? armedAutoGroupTargetForDraggedNode(draggedNode) : null;
+        let committedGroupId = '';
+        let committedAutoGroup = null;
         if(
             insertHit &&
             insertLoopNodeIntoConnection(draggedNode, insertHit)
@@ -17978,6 +18425,7 @@ window.onmouseup = e => {
             addDraggedNodesToSmartGroup(draggedNodes.length ? draggedNodes : [draggedNode], smartGroupTarget)
         ){
             stateChanged = true;
+            committedGroupId = smartGroupTarget.id;
             render();
         } else if(
             groupTarget &&
@@ -17998,6 +18446,13 @@ window.onmouseup = e => {
             stateChanged = true;
             restoreDraggedNodePosition();
             if(selectedId === draggedNode.id) selectedId = '';
+            render();
+        } else if(
+            armedAutoGroupTarget &&
+            (committedAutoGroup = commitUniversalAutoGroup(draggedNode, armedAutoGroupTarget))
+        ){
+            stateChanged = true;
+            committedGroupId = committedAutoGroup.id;
             render();
         } else if(draggedNode && (draggedNode.images || []).length && (dragState.group || []).length <= 1){
             const r = nodeRect(draggedNode);
@@ -18027,7 +18482,7 @@ window.onmouseup = e => {
         }
         if(dragState.thumbDetached) stateChanged = true;
         // 拖出（没落到任何分组上）：普通节点退出所在分组；子分组退出时把它并入过的成员从主分组里撤掉。
-        if(draggedNode && !smartGroupTarget && pruneSmartGroupMembershipsForNode(draggedNode)){
+        if(draggedNode && !smartGroupTarget && !committedGroupId && pruneSmartGroupMembershipsForNode(draggedNode)){
             stateChanged = true;
             render();
         }
@@ -18035,8 +18490,10 @@ window.onmouseup = e => {
         else discardPendingUndo();
         if(stateChanged || dragState.thumbDetached) suppressNodeClickUntil = Date.now() + 180;
         clearDropHighlight();
+        cancelAutoGroupIntent();
         loopInsertPreview = null;
         dragState = null;
+        world.querySelectorAll('.image-node.dragging').forEach(el => el.classList.remove('dragging'));
         scheduleSave();
         scheduleConnectionLayerRefresh();
     }
@@ -18165,6 +18622,10 @@ window.addEventListener('keydown', e => {
         closeImageEditor();
         return;
     }
+    if(e.key === 'Escape' && cancelActiveSmartDrag({restorePending:true})){
+        e.preventDefault();
+        return;
+    }
     if((e.ctrlKey || e.metaKey) && key === 'z' && !isEditableTarget(e.target)){
         e.preventDefault();
         performUndo();
@@ -18172,6 +18633,7 @@ window.addEventListener('keydown', e => {
     }
     if((e.key === 'Delete' || e.key === 'Backspace') && (selectedId || selectedIds.length) && !isEditableTarget(e.target)){
         e.preventDefault();
+        cancelActiveSmartDrag({restorePending:true, render:false});
         const ids = selectedIds.length ? selectedIds.slice() : [selectedId];
         pushUndo();
         ids.forEach(id => { undoSuppressed = true; deleteNode(id); undoSuppressed = false; });
@@ -18194,6 +18656,7 @@ window.addEventListener('keyup', e => {
 });
 window.addEventListener('blur', () => {
     isRKeyDown = false;
+    cancelActiveSmartDrag({restorePending:true});
 });
 engineSelect.onchange = () => {
     settings.engine = engineSelect.value;
