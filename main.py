@@ -8,6 +8,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import os
+import stat
 import re
 import random
 import sys
@@ -29,7 +30,7 @@ import html
 import xml.etree.ElementTree as ET
 from contextvars import ContextVar
 from typing import List, Dict, Any, Optional, Tuple
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
@@ -303,7 +304,7 @@ QUEUE_LOCK = Lock()
 HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
-CANVAS_LOCK = Lock()
+CANVAS_LOCK = RLock()
 LOAD_LOCK = Lock()
 RUNNINGHUB_WORKFLOW_LOCK = Lock()
 NEXT_TASK_ID = 1
@@ -2902,6 +2903,12 @@ class GenerateRequest(BaseModel):
 class DeleteHistoryRequest(BaseModel):
     timestamp: float
 
+class DeleteCanvasLogRequest(BaseModel):
+    log_id: str
+    delete_unreferenced_media: bool = False
+    reset_referencing_nodes: bool = False
+    base_updated_at: int = 0
+
 class TokenRequest(BaseModel):
     token: str
 
@@ -3785,10 +3792,20 @@ def canvas_path(canvas_id):
     return os.path.join(CANVAS_DIR, f"{cleaned}.json")
 
 def save_canvas(canvas):
-    canvas["updated_at"] = now_ms()
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        canvas["updated_at"] = max(now_ms(), int(canvas.get("updated_at") or 0) + 1)
+        write_json_atomic(canvas_path(canvas["id"]), canvas)
+
+def write_json_atomic(path, value, indent=2):
+    """Never truncate a saved document if serialization or replacement fails."""
+    fd, temporary = tempfile.mkstemp(prefix=".json-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=indent)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
@@ -7215,6 +7232,324 @@ def output_file_from_url(url):
             return path
     return None
 
+def collect_local_media_urls(value: Any) -> List[str]:
+    """Collect local /assets and /output URLs from nested canvas log payloads."""
+    urls = []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("/assets/", "/output/", "/api/storage-files/")):
+            urls.append(text)
+    elif isinstance(value, dict):
+        for item in value.values():
+            urls.extend(collect_local_media_urls(item))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            urls.extend(collect_local_media_urls(item))
+    return urls
+
+def cleanup_media_file_path(root: str, relative: str, require_exists: bool = True,
+                            reference_only: bool = False) -> Optional[str]:
+    """Resolve a strict relative file path; deletion never follows child links."""
+    if reference_only:
+        relative = relative.replace("\\", "/")
+    if not relative or "\\" in relative or any(ord(char) < 32 for char in relative):
+        return None
+    parts = relative.split("/")
+    if any(not part or ":" in part for part in parts):
+        return None
+    if not reference_only and any(part in {".", ".."} or part.endswith((".", " ")) for part in parts):
+        return None
+    try:
+        root = os.path.realpath(root)
+        path = os.path.abspath(os.path.join(root, *parts))
+        if os.path.commonpath([root, path]) != root:
+            return None
+        resolved = os.path.realpath(path)
+        # Aliases count as references, but must never be deletion candidates.
+        if not reference_only and os.path.normcase(resolved) != os.path.normcase(path):
+            return None
+        if require_exists and not os.path.isfile(resolved):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+def local_media_path_from_url(url: str, reference_only: bool = False) -> Optional[str]:
+    """Map local URLs exactly as the mounts do; never use output fallback lookup."""
+    if not isinstance(url, str) or not url or any(ord(char) < 32 for char in url):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme or parsed.netloc:
+            return None
+        # Deletion requires a well-formed URL. Legacy literal-percent references
+        # may still protect a file, but must never become deletion candidates.
+        if not reference_only and re.search(r"%(?![0-9a-fA-F]{2})", parsed.path):
+            return None
+        clean = urllib.parse.unquote(parsed.path, errors="strict")
+        if clean.startswith("/api/storage-files/"):
+            kind, _, relative = clean[len("/api/storage-files/"):].partition("/")
+            root = storage_kind_dir(kind)
+        elif clean.startswith("/assets/"):
+            root, relative = ASSETS_DIR, clean[len("/assets/"):]
+        elif clean.startswith("/output/"):
+            root, relative = OUTPUT_DIR, clean[len("/output/"):]
+        else:
+            return None
+        return cleanup_media_file_path(root, relative, require_exists=not reference_only,
+                                       reference_only=reference_only)
+    except (HTTPException, OSError, UnicodeError, ValueError):
+        return None
+
+
+def generated_media_path_from_url(url: str) -> Optional[str]:
+    """Only existing regular files in the configured generated roots are eligible."""
+    return generated_media_file_path(local_media_path_from_url(url))
+
+
+def generated_media_file_path(path: Optional[str]) -> Optional[str]:
+    """Validate/revalidate an already resolved candidate immediately before unlink."""
+    if not path:
+        return None
+    for root in (OUTPUT_OUTPUT_DIR, OUTPUT_DIR):
+        try:
+            relative = os.path.relpath(path, os.path.realpath(root)).replace(os.sep, "/")
+            if cleanup_media_file_path(root, relative) == path:
+                return path
+        except (OSError, ValueError):
+            continue
+    return None
+
+def json_references_media_path(value: Any, target_path: str) -> bool:
+    """Return True when a JSON-compatible value references the local media file."""
+    target = os.path.normcase(os.path.realpath(target_path))
+    if isinstance(value, str):
+        try:
+            resolved = local_media_path_from_url(value.strip(), reference_only=True)
+        except (HTTPException, OSError, ValueError):
+            return False
+        return bool(resolved and os.path.normcase(os.path.realpath(resolved)) == target)
+    if isinstance(value, dict):
+        return any(json_references_media_path(item, target) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(json_references_media_path(item, target) for item in value)
+    return False
+
+def persisted_json_references_media_path(target_path: str) -> bool:
+    """Scan persisted user documents before deleting generated media.
+
+    Canvas logs are only one possible owner. Nodes, other canvases,
+    conversations and asset metadata all count as live references.
+    """
+    # Generation history is an index of outputs, not an owner. When an output
+    # is deleted we prune its history card separately so this index cannot pin
+    # every generated file forever.
+    candidates = [ASSET_LIBRARY_PATH, GLOBAL_CONFIG_FILE]
+    for root in (CANVAS_DIR, CONVERSATION_DIR):
+        root = os.path.realpath(root)
+        try:
+            root_stat = os.stat(root)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        if not stat.S_ISDIR(root_stat.st_mode):
+            return True
+        def unreadable_directory(error):
+            raise error
+        try:
+            documents = list(os.walk(root, onerror=unreadable_directory))
+        except OSError:
+            return True
+        for current, directories, files in documents:
+            # os.walk does not follow child directory links. Treat an
+            # unscanned alias as an unknown owner, rather than ignoring it.
+            if any(os.path.normcase(os.path.realpath(os.path.join(current, name))) !=
+                   os.path.normcase(os.path.abspath(os.path.join(current, name)))
+                   for name in directories):
+                return True
+            candidates.extend(os.path.join(current, name) for name in files if name.lower().endswith(".json"))
+    seen = set()
+    for path in candidates:
+        path = os.path.abspath(path)
+        if path in seen:
+            continue
+        try:
+            file_stat = os.stat(path)
+        except FileNotFoundError:
+            # Missing optional indexes are fine; existing unreadable entries are not.
+            if os.path.lexists(path):
+                return True
+            continue
+        except OSError:
+            return True
+        if not stat.S_ISREG(file_stat.st_mode):
+            return True
+        seen.add(path)
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                value = json.load(handle)
+            if json_references_media_path(value, target_path):
+                return True
+        except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+            # A file may be in the middle of an unrelated write. Safety wins:
+            # keep the media instead of treating an unreadable owner as absent.
+            return True
+    return False
+
+def prune_generation_history_for_media(paths: List[str]) -> int:
+    """Remove history index cards only for media that was actually deleted."""
+    if not paths:
+        return 0
+    with HISTORY_LOCK:
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8-sig") as handle:
+                history = json.load(handle)
+        except FileNotFoundError:
+            return 0
+        if not isinstance(history, list):
+            raise ValueError("Generation history must be a list")
+        kept = [record for record in history
+                if not any(json_references_media_path(record, path) for path in paths)]
+        removed = len(history) - len(kept)
+        if removed:
+            write_json_atomic(HISTORY_FILE, kept, indent=4)
+        return removed
+
+def smart_owned_result_items(images: List[Any], paths: List[str]) -> List[Any]:
+    """Return generated results, including legacy results without the marker."""
+    return [
+        item for item in images
+        if isinstance(item, dict)
+        and item.get("loopInputPreview") is not True
+        and (
+            item.get("generatedResult") is True
+            or any(json_references_media_path(item, path) for path in paths)
+        )
+    ]
+
+def expand_canvas_generated_media_paths(canvas: Dict[str, Any], paths: List[str]) -> List[str]:
+    """Include every generated result owned by a result node touched by the log."""
+    expanded = list(paths)
+    for node in list(canvas.get("nodes") or []):
+        node_type = str(node.get("type") or "").strip().lower()
+        images = list(node.get("images") or [])
+        if node_type == "output":
+            owned_items = images
+        elif node_type == "smart-image":
+            owned_items = smart_owned_result_items(images, paths)
+        else:
+            owned_items = []
+        if not any(json_references_media_path(item, path) for item in owned_items for path in paths):
+            continue
+        for item in owned_items:
+            for url in collect_local_media_urls(item):
+                candidate = generated_media_path_from_url(url)
+                if candidate and candidate not in expanded:
+                    expanded.append(candidate)
+    return expanded
+
+def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]) -> List[str]:
+    """Clear generated media while preserving prompts, references, settings and links."""
+    reset_ids = []
+    updated_nodes = []
+    for node in list(canvas.get("nodes") or []):
+        node = dict(node)
+        node_type = str(node.get("type") or "").strip().lower()
+        changed = False
+        if isinstance(node.get("generatedOutputs"), list):
+            outputs = list(node.get("generatedOutputs") or [])
+            kept_outputs = [
+                item for item in outputs
+                if not any(json_references_media_path(item, path) for path in paths)
+            ]
+            if len(kept_outputs) != len(outputs):
+                node["generatedOutputs"] = kept_outputs
+                changed = True
+        if node_type in {"smart-image", "output"} and isinstance(node.get("images"), list):
+            images = list(node.get("images") or [])
+            if node_type == "smart-image":
+                owned_items = smart_owned_result_items(images, paths)
+            else:
+                owned_items = images
+            owns_target = any(
+                json_references_media_path(item, path) for item in owned_items for path in paths
+            )
+            kept_images = [
+                item for item in images
+                if not (
+                    owns_target
+                    and item in owned_items
+                    and any(json_references_media_path(item, path) for path in paths)
+                )
+            ]
+            if len(kept_images) != len(images):
+                node["images"] = kept_images
+                changed = True
+                if node_type == "output":
+                    node["_pending"] = []
+                    node["imageComparisons"] = {}
+                if node_type == "smart-image":
+                    node["pending"] = 0
+                    node["running"] = False
+                    node["queued"] = False
+                    for key in (
+                        "jimengPending", "pendingTasks", "runStartedAt", "runFinishedAt",
+                        "runElapsedMs", "runTimerHidden", "outputKind", "w", "h",
+                    ):
+                        node.pop(key, None)
+        elif node_type == "image" and any(json_references_media_path(node.get("url"), path) for path in paths):
+            node["url"] = ""
+            node["mediaKind"] = "image"
+            node["name"] = "空白图片"
+            changed = True
+        if changed and node.get("id"):
+            reset_ids.append(str(node["id"]))
+        updated_nodes.append(node)
+
+    if reset_ids:
+        canvas["nodes"] = updated_nodes
+    return reset_ids
+
+def delete_media_preview_cache(path: str) -> int:
+    """Delete derived previews for a source file before the source disappears."""
+    try:
+        stat = os.stat(path)
+        with os.scandir(MEDIA_PREVIEW_DIR) as entries:
+            existing = {entry.name for entry in entries}
+    except FileNotFoundError:
+        return 0
+    if not existing:
+        return 0
+    # Preview keys use abspath, while safe deletion uses realpath. Preserve
+    # configured mount spellings too (notably Windows 8.3 short directory names).
+    sources = {os.path.abspath(path), os.path.realpath(path)}
+    for root in (ASSETS_DIR, OUTPUT_OUTPUT_DIR, OUTPUT_DIR):
+        try:
+            relative = os.path.relpath(path, os.path.realpath(root)).replace(os.sep, "/")
+            if cleanup_media_file_path(root, relative) == os.path.realpath(path):
+                sources.add(os.path.abspath(os.path.join(root, *relative.split("/"))))
+        except ValueError:
+            continue
+    keys = set()
+    for source in sources:
+        for width in range(0, 4097):
+            keys.add(hashlib.sha1(f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{width}|jpg".encode("utf-8", "ignore")).hexdigest() + ".jpg")
+            if 64 <= width <= 2048:
+                preview_key = hashlib.sha1(f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode("utf-8", "ignore")).hexdigest()
+                keys.update((preview_key + ".webp", preview_key + ".png"))
+    removed = 0
+    for name in sorted(keys & existing):
+        cache_path = cleanup_media_file_path(MEDIA_PREVIEW_DIR, name)
+        if cache_path:
+            try:
+                os.remove(cache_path)
+                removed += 1
+            except FileNotFoundError:
+                pass
+    return removed
+
 def image_has_alpha(img: Image.Image) -> bool:
     if img.mode in ("RGBA", "LA"):
         return True
@@ -8011,8 +8346,9 @@ def save_asset_library(lib):
     sort_asset_library_items(lib)
     lib["updated_at"] = now_ms()
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(lib, f, ensure_ascii=False, indent=2)
+    with CANVAS_LOCK:
+        with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(lib, f, ensure_ascii=False, indent=2)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(manager.broadcast_asset_library_updated(int(lib["updated_at"])), GLOBAL_LOOP)
 
@@ -17200,26 +17536,25 @@ async def get_canvas_meta(canvas_id: str):
 async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
     """更新画布的轻量元数据（标题/图标/负责人/颜色/置顶）。
     刻意不走 save_canvas（它会刷新 updated_at），以免打标签/置顶把画布顶到列表最前。"""
-    canvas = load_canvas(canvas_id)
-    if payload.title is not None:
-        canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
-    if payload.icon is not None:
-        canvas["icon"] = (payload.icon or "layers")[:32]
-    if payload.owner is not None:
-        canvas["owner"] = str(payload.owner).strip()[:40]
-    if payload.color is not None:
-        canvas["color"] = normalize_canvas_color(payload.color)
-    if payload.pinned is not None:
-        canvas["pinned"] = bool(payload.pinned)
-    if payload.project is not None:
-        canvas["project"] = str(payload.project).strip() or DEFAULT_PROJECT_ID
-    if payload.board_x is not None:
-        canvas["board_x"] = float(payload.board_x)
-    if payload.board_y is not None:
-        canvas["board_y"] = float(payload.board_y)
     with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        canvas = load_canvas(canvas_id)
+        if payload.title is not None:
+            canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
+        if payload.icon is not None:
+            canvas["icon"] = (payload.icon or "layers")[:32]
+        if payload.owner is not None:
+            canvas["owner"] = str(payload.owner).strip()[:40]
+        if payload.color is not None:
+            canvas["color"] = normalize_canvas_color(payload.color)
+        if payload.pinned is not None:
+            canvas["pinned"] = bool(payload.pinned)
+        if payload.project is not None:
+            canvas["project"] = str(payload.project).strip() or DEFAULT_PROJECT_ID
+        if payload.board_x is not None:
+            canvas["board_x"] = float(payload.board_x)
+        if payload.board_y is not None:
+            canvas["board_y"] = float(payload.board_y)
+        write_json_atomic(canvas_path(canvas["id"]), canvas)
     return {"canvas": canvas_record(canvas)}
 
 @app.get("/api/canvases/{canvas_id}")
@@ -17228,8 +17563,9 @@ async def get_canvas(canvas_id: str):
 
 @app.post("/api/canvases/{canvas_id}/touch")
 async def touch_canvas(canvas_id: str):
-    canvas = load_canvas(canvas_id)
-    save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        save_canvas(canvas)
     return {"canvas": canvas_record(canvas), "updated_at": canvas.get("updated_at", 0)}
 
 @app.get("/api/canvas-assets")
@@ -18369,50 +18705,139 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
 
 @app.put("/api/canvases/{canvas_id}")
 async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
-    canvas = load_canvas(canvas_id)
-    current_updated_at = int(canvas.get("updated_at") or 0)
-    if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
-        raise HTTPException(status_code=409, detail={
-            "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
-            "canvas": canvas,
-            "updated_at": current_updated_at,
-        })
-    canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
-    canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
-    canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
-    canvas["nodes"] = payload.nodes
-    canvas["connections"] = payload.connections
-    if canvas["kind"] == "smart":
-        canvas["viewport"] = payload.viewport
-    else:
-        canvas["viewport"] = canvas.get("viewport") or {"x": 0, "y": 0, "scale": 1}
-    canvas["logs"] = payload.logs[-500:]
-    canvas["settings"] = payload.settings or {}
-    save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        current_updated_at = int(canvas.get("updated_at") or 0)
+        if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
+            raise HTTPException(status_code=409, detail={
+                "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
+                "canvas": canvas,
+                "updated_at": current_updated_at,
+            })
+        canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
+        canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
+        canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
+        canvas["nodes"] = payload.nodes
+        canvas["connections"] = payload.connections
+        if canvas["kind"] == "smart":
+            canvas["viewport"] = payload.viewport
+        else:
+            canvas["viewport"] = canvas.get("viewport") or {"x": 0, "y": 0, "scale": 1}
+        canvas["logs"] = payload.logs[-500:]
+        canvas["settings"] = payload.settings or {}
+        save_canvas(canvas)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 
+@app.post("/api/canvases/{canvas_id}/logs/delete")
+async def delete_canvas_log(canvas_id: str, payload: DeleteCanvasLogRequest):
+    log_id = payload.log_id.strip()
+    if not log_id:
+        raise HTTPException(status_code=400, detail="缺少日志 ID")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", canvas_id):
+        raise HTTPException(status_code=400, detail="无效的画布 ID")
+
+    def delete_record_and_media():
+        # Hold the transaction through reference checks and unlink. In-app
+        # canvas/conversation writers cannot introduce a reference mid-cleanup.
+        with CANVAS_LOCK, CONVERSATION_LOCK, GLOBAL_CONFIG_LOCK:
+            if not cleanup_media_file_path(CANVAS_DIR, f"{canvas_id}.json"):
+                raise HTTPException(status_code=404, detail="画布不存在或路径不安全")
+            canvas = load_canvas(canvas_id)
+            if canvas.get("id") != canvas_id:
+                raise HTTPException(status_code=400, detail="画布 ID 不匹配")
+            current_updated_at = int(canvas.get("updated_at") or 0)
+            if payload.base_updated_at and int(payload.base_updated_at) < current_updated_at:
+                raise HTTPException(status_code=409, detail={
+                    "message": "画布已被其他页面更新，请刷新后重试。",
+                    "canvas": canvas,
+                    "updated_at": current_updated_at,
+                })
+            logs = list(canvas.get("logs") or [])
+            target = next((item for item in logs if str(item.get("id") or "") == log_id), None)
+            if target is None:
+                raise HTTPException(status_code=404, detail="生成日志不存在")
+
+            candidates = []
+            if payload.delete_unreferenced_media:
+                for url in collect_local_media_urls(target.get("outputs") or []):
+                    path = generated_media_path_from_url(url)
+                    if path and path not in candidates:
+                        candidates.append(path)
+            reset_node_ids = []
+            if payload.reset_referencing_nodes and candidates:
+                candidates = expand_canvas_generated_media_paths(canvas, candidates)
+                reset_node_ids = reset_canvas_result_nodes_for_media(canvas, candidates)
+            canvas["logs"] = [item for item in logs if str(item.get("id") or "") != log_id]
+            save_canvas(canvas)
+
+            removed_files, removed_paths, skipped_referenced, cleanup_errors = [], [], [], []
+            removed_previews = 0
+            for path in candidates:
+                if persisted_json_references_media_path(path):
+                    skipped_referenced.append(os.path.basename(path))
+                    continue
+                try:
+                    # Recheck after scanning documents: a replaced symlink or
+                    # directory must not turn a valid candidate into an escape.
+                    if generated_media_file_path(path) != path:
+                        if os.path.lexists(path):
+                            cleanup_errors.append({"file": os.path.basename(path), "error": "unsafe path"})
+                        continue
+                    removed_previews += delete_media_preview_cache(path)
+                    if generated_media_file_path(path) != path:
+                        cleanup_errors.append({"file": os.path.basename(path), "error": "path changed during cleanup"})
+                        continue
+                    os.remove(path)
+                    removed_paths.append(path)
+                    removed_files.append(os.path.basename(path))
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError) as exc:
+                    cleanup_errors.append({"file": os.path.basename(path), "error": str(exc)})
+            try:
+                prune_generation_history_for_media(removed_paths)
+            except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+                cleanup_errors.append({"file": "generation history", "error": str(exc)})
+            return {
+                "ok": not cleanup_errors,
+                "canvas": canvas,
+                "removed_files": removed_files,
+                "removed_previews": removed_previews,
+                "reset_node_ids": reset_node_ids,
+                "skipped_referenced": skipped_referenced,
+                "cleanup_errors": cleanup_errors,
+            }
+
+    result = await asyncio.to_thread(delete_record_and_media)
+    await manager.broadcast_canvas_updated(canvas_id, int(result["canvas"]["updated_at"]))
+    return result
+
+
 @app.delete("/api/canvases/{canvas_id}")
 async def delete_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
-    if not canvas.get("deleted_at"):
-        canvas["deleted_at"] = now_ms()
-        save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas_any(canvas_id)
+        if not canvas.get("deleted_at"):
+            canvas["deleted_at"] = now_ms()
+            save_canvas(canvas)
     return {"ok": True}
 
 @app.post("/api/canvases/{canvas_id}/restore")
 async def restore_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
-    if canvas.get("deleted_at"):
-        canvas.pop("deleted_at", None)
-        save_canvas(canvas)
+    with CANVAS_LOCK:
+        canvas = load_canvas_any(canvas_id)
+        if canvas.get("deleted_at"):
+            canvas.pop("deleted_at", None)
+            save_canvas(canvas)
     return {"canvas": canvas}
 
 @app.delete("/api/canvases/{canvas_id}/purge")
 async def purge_canvas(canvas_id: str):
-    path = canvas_path(canvas_id)
-    if os.path.exists(path):
-        os.remove(path)
+    with CANVAS_LOCK:
+        path = canvas_path(canvas_id)
+        if os.path.exists(path):
+            os.remove(path)
     return {"ok": True}
 
 # --- GPT 对话 ---
