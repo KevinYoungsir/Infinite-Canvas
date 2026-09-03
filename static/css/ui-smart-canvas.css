@@ -1,0 +1,777 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   Infinite Canvas — Smart Canvas UI Override
+   Phase 1: Design Foundation Mapping
+
+   This file maps the new --ui-* design tokens to the existing Smart Canvas
+   without modifying smart-canvas.css. It ONLY overrides visual properties
+   (color, background, border, shadow, radius, font-weight, scrollbar).
+
+   It does NOT modify:
+   - position, width, height, transform, transform-origin
+   - z-index values (existing z-index stack preserved)
+   - display, flex, grid layout properties
+   - any element that affects coordinate math
+
+   Load order: smart-canvas.css → ui-foundation.css → ui-smart-canvas.css
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+
+/* ─── 1. Canvas Background & Dot Grid ────────────────────────────────────────
+   Target: .shell
+   Override: background-color, background-image (dot grid)
+   Safe: These are purely visual and do not affect coordinate math.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.shell {
+    background-color: var(--ui-bg-canvas);
+    background-image: radial-gradient(var(--ui-bg-canvas-grid) 1px, transparent 1px);
+}
+
+
+/* ─── 2. Floating HUD — Back Button ──────────────────────────────────────────
+   Target: .smart-back
+   Override: surface, border, shadow, radius, typography
+   NOT modified: position, left, top, z-index, height, padding, gap
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.smart-back {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-md);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-semibold);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.smart-back:hover {
+    border-color: var(--ui-border-strong);
+}
+
+
+/* ─── 3. Canvas Title ────────────────────────────────────────────────────────
+   Target: .smart-title
+   Override: color, font-weight
+   NOT modified: position, left, top, z-index, max-width
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.smart-title {
+    color: var(--ui-text-tertiary);
+    font-weight: var(--ui-weight-medium);
+}
+
+
+/* ─── 4. Header Toggle Buttons (Log, Shortcut, Workflow, Asset) ──────────────
+   Target: .smart-log-toggle, .smart-shortcut-toggle, .smart-workflow-toggle,
+           .asset-toggle
+   Override: surface, border, shadow, radius, typography
+   NOT modified: position, top, right, z-index, width, height, padding
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.smart-log-toggle,
+.smart-shortcut-toggle,
+.smart-workflow-toggle,
+.asset-toggle {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-md);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-standard),
+                transform var(--ui-duration-fast) var(--ui-ease-standard),
+                background var(--ui-duration-fast) var(--ui-ease-standard),
+                color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.smart-log-toggle:hover,
+.smart-shortcut-toggle:hover,
+.smart-workflow-toggle:hover,
+.asset-toggle:hover {
+    border-color: var(--ui-border-strong);
+}
+
+.smart-log-toggle.active,
+.smart-shortcut-toggle.active,
+.smart-workflow-toggle.active,
+.asset-toggle.active {
+    background: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+    border-color: var(--ui-accent);
+    box-shadow: var(--ui-shadow-md);
+}
+
+
+/* ─── 5. Minimap ─────────────────────────────────────────────────────────────
+   Target: .smart-minimap
+   Override: surface, border, shadow, radius
+   NOT modified: position, right, bottom, z-index, width, height
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.smart-minimap {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-md);
+    border-radius: var(--ui-radius-lg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+
+/* ─── 6. Create Menu ─────────────────────────────────────────────────────────
+   Target: .create-menu
+   Override: surface, border, shadow, radius
+   NOT modified: position, z-index, width
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.create-menu {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-lg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.create-menu-item {
+    border-radius: var(--ui-radius-sm);
+    font-weight: var(--ui-weight-medium);
+    transition: background var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.create-menu-item:hover {
+    background: var(--ui-bg-hover);
+}
+
+
+/* ─── 7. Arrange Button ──────────────────────────────────────────────────────
+   Target: .minimap-arrange-btn
+   Override: surface, border, shadow, radius
+   NOT modified: position, z-index
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.minimap-arrange-btn {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-sm);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.minimap-arrange-btn:hover {
+    border-color: var(--ui-border-strong);
+}
+
+
+/* ─── 8. Composer Card ───────────────────────────────────────────────────────
+   Target: .composer-card
+   Override: surface, border, shadow, radius
+   NOT modified: position (composer is in #world), z-index, grid layout, gap
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.composer-card {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 9. Prompt Input ────────────────────────────────────────────────────────
+   Target: .prompt-input (contenteditable div in composer)
+   Override: surface, border, radius, typography
+   NOT modified: width, height, min-height, max-height, padding
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.prompt-input {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-normal);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-standard),
+                box-shadow var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.prompt-input:empty::before {
+    color: var(--ui-text-placeholder);
+    font-weight: var(--ui-weight-normal);
+}
+
+.prompt-input:focus {
+    border-color: var(--ui-border-focus);
+    box-shadow: var(--ui-focus-ring);
+}
+
+.theme-dark .prompt-input:focus {
+    box-shadow: var(--ui-focus-ring);
+}
+
+
+/* ─── 10. Engine Select ──────────────────────────────────────────────────────
+   Target: .engine-select
+   Override: surface, border, radius, typography
+   NOT modified: height, padding
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.engine-select {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.engine-select:hover {
+    border-color: var(--ui-border-strong);
+}
+
+.engine-select:focus {
+    border-color: var(--ui-border-focus);
+}
+
+
+/* ─── 11. Kind Toggle (Image/Video switch) ───────────────────────────────────
+   Override: surface, border, radius
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.kind-toggle {
+    border-color: var(--ui-border-default);
+    background: var(--ui-bg-soft);
+    border-radius: var(--ui-radius-sm);
+}
+
+.kind-toggle button {
+    border-radius: var(--ui-radius-xs);
+    font-weight: var(--ui-weight-medium);
+    color: var(--ui-text-secondary);
+    transition: background var(--ui-duration-fast) var(--ui-ease-standard),
+                color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.kind-toggle button:hover {
+    color: var(--ui-text-primary);
+}
+
+.kind-toggle button.active {
+    background: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+}
+
+
+/* ─── 12. Image Mode Toggle ─────────────────────────────────────────────────
+   Override: surface, border, radius
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.image-mode-toggle {
+    border-color: var(--ui-border-default);
+    background: var(--ui-bg-soft);
+    border-radius: var(--ui-radius-sm);
+}
+
+.image-mode-toggle button {
+    border-radius: var(--ui-radius-xs);
+    font-weight: var(--ui-weight-medium);
+    color: var(--ui-text-secondary);
+    transition: background var(--ui-duration-fast) var(--ui-ease-standard),
+                color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.image-mode-toggle button:hover {
+    color: var(--ui-text-primary);
+}
+
+.image-mode-toggle button.active {
+    background: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+}
+
+
+/* ─── 13. Run Button ─────────────────────────────────────────────────────────
+   Target: .composer-actions .smart-pill (Run / Cascade)
+   Override: radius, font-weight
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.composer-actions .smart-pill {
+    border-radius: var(--ui-radius-sm);
+    font-weight: var(--ui-weight-semibold);
+}
+
+
+/* ─── 14. Asset Panel ────────────────────────────────────────────────────────
+   Target: .asset-panel
+   Override: surface, border, shadow, radius
+   NOT modified: position, right, top, bottom, z-index, width
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.asset-panel {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 15. Asset Panel Inner Components ───────────────────────────────────────
+   Target: .asset-tabs, .asset-tab, .asset-category-select, .asset-item,
+           .asset-drop-zone, .asset-rename-input, .asset-name
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.asset-tabs {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+    border-radius: var(--ui-radius-md);
+}
+
+.asset-tab {
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-secondary);
+    font-weight: var(--ui-weight-medium);
+    transition: background var(--ui-duration-fast) var(--ui-ease-standard),
+                color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.asset-tab.active {
+    background: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+.asset-category-select {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-category-select:focus {
+    border-color: var(--ui-border-focus);
+}
+
+.asset-item {
+    border-color: var(--ui-border-subtle);
+    background: var(--ui-bg-surface);
+    border-radius: var(--ui-radius-md);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-standard),
+                box-shadow var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.asset-item:hover {
+    border-color: var(--ui-border-strong);
+}
+
+.theme-dark .asset-item {
+    background: var(--ui-bg-surface-raised);
+}
+
+.asset-name {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-drop-zone {
+    border-color: var(--ui-border-default);
+    color: var(--ui-text-tertiary);
+    background: var(--ui-bg-soft);
+    border-radius: var(--ui-radius-md);
+}
+
+.asset-drop-zone.drag-over {
+    border-color: var(--ui-accent);
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-surface);
+}
+
+.asset-rename-input {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-rename-input:focus {
+    border-color: var(--ui-border-focus);
+    background: var(--ui-bg-surface);
+    box-shadow: var(--ui-focus-ring);
+}
+
+.theme-dark .asset-rename-input:focus {
+    box-shadow: var(--ui-focus-ring);
+}
+
+
+/* ─── 16. Asset Dialog ───────────────────────────────────────────────────────
+   Target: .asset-dialog, .asset-dialog-input
+   Override: surface, border, shadow, radius
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.asset-dialog {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+.asset-dialog-title {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-semibold);
+}
+
+.asset-dialog-input {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-dialog-input:focus {
+    border-color: var(--ui-border-focus);
+    box-shadow: var(--ui-focus-ring);
+}
+
+.theme-dark .asset-dialog-input:focus {
+    box-shadow: var(--ui-focus-ring);
+}
+
+.asset-dialog-btn.secondary {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    color: var(--ui-text-secondary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-dialog-btn.primary {
+    background: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+    font-weight: var(--ui-weight-semibold);
+}
+
+
+/* ─── 17. Smart Popover (Parameter Menus) ────────────────────────────────────
+   Target: .smart-popover
+   Override: surface, border, shadow, radius
+   NOT modified: position, z-index, min-width, max-width
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.smart-popover {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-md);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+
+/* ─── 18. Prompt Preset Panel ────────────────────────────────────────────────
+   Target: .prompt-preset-panel
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.prompt-preset-panel {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 19. Prompt Template Panel ──────────────────────────────────────────────
+   Target: .prompt-template-panel
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.prompt-template-panel {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 20. Workflow Transfer Panel ────────────────────────────────────────────
+   Target: .workflow-transfer-panel
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.workflow-transfer-panel {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 21. Shortcut Modal ─────────────────────────────────────────────────────
+   Target: .shortcut-modal
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.shortcut-modal {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 22. Log Modal ──────────────────────────────────────────────────────────
+   Target: .log-modal
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.log-modal {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-xl);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+
+/* ─── 23. Toast Notification ─────────────────────────────────────────────────
+   Target: .toast
+   Override: surface, border, shadow, radius, typography
+   NOT modified: position, z-index
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.toast {
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+
+/* ─── 24. Global Scrollbar Override for Smart Canvas ─────────────────────────
+   Scope: .shell and descendants — ONLY within smart canvas context
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* Firefox */
+.shell *,
+.asset-panel,
+.prompt-preset-panel,
+.prompt-template-panel,
+.workflow-transfer-panel,
+.shortcut-modal,
+.log-modal {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ui-scrollbar-thumb) var(--ui-scrollbar-track);
+}
+
+/* WebKit */
+.shell *::-webkit-scrollbar,
+.asset-panel::-webkit-scrollbar,
+.prompt-preset-panel::-webkit-scrollbar,
+.prompt-template-panel::-webkit-scrollbar,
+.workflow-transfer-panel::-webkit-scrollbar,
+.shortcut-modal::-webkit-scrollbar,
+.log-modal::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.shell *::-webkit-scrollbar-track,
+.asset-panel::-webkit-scrollbar-track,
+.prompt-preset-panel::-webkit-scrollbar-track,
+.prompt-template-panel::-webkit-scrollbar-track,
+.workflow-transfer-panel::-webkit-scrollbar-track,
+.shortcut-modal::-webkit-scrollbar-track,
+.log-modal::-webkit-scrollbar-track {
+    background: var(--ui-scrollbar-track);
+}
+
+.shell *::-webkit-scrollbar-thumb,
+.asset-panel::-webkit-scrollbar-thumb,
+.prompt-preset-panel::-webkit-scrollbar-thumb,
+.prompt-template-panel::-webkit-scrollbar-thumb,
+.workflow-transfer-panel::-webkit-scrollbar-thumb,
+.shortcut-modal::-webkit-scrollbar-thumb,
+.log-modal::-webkit-scrollbar-thumb {
+    background: var(--ui-scrollbar-thumb);
+    border-radius: var(--ui-radius-pill);
+}
+
+.shell *::-webkit-scrollbar-thumb:hover,
+.asset-panel::-webkit-scrollbar-thumb:hover,
+.prompt-preset-panel::-webkit-scrollbar-thumb:hover,
+.prompt-template-panel::-webkit-scrollbar-thumb:hover,
+.workflow-transfer-panel::-webkit-scrollbar-thumb:hover,
+.shortcut-modal::-webkit-scrollbar-thumb:hover,
+.log-modal::-webkit-scrollbar-thumb:hover {
+    background: var(--ui-scrollbar-thumb-hover);
+}
+
+
+/* ─── 25. Composer Head Typography ───────────────────────────────────────────
+   Reduce heavy font-weight across composer meta text
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.composer-head-hint {
+    color: var(--ui-text-tertiary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.asset-title {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-semibold);
+}
+
+.asset-mini-btn {
+    color: var(--ui-text-secondary);
+    border-radius: var(--ui-radius-sm);
+    transition: color var(--ui-duration-fast) var(--ui-ease-standard),
+                background var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.asset-mini-btn:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+}
+
+
+/* ─── 26. Composer Template Button ───────────────────────────────────────────
+   Override: surface, border, radius
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.composer-template-btn {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+    color: var(--ui-text-secondary);
+    border-radius: var(--ui-radius-sm);
+    box-shadow: none;
+    transition: background var(--ui-duration-fast) var(--ui-ease-standard),
+                color var(--ui-duration-fast) var(--ui-ease-standard),
+                border-color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.composer-template-btn:hover,
+.composer-template-btn:focus-visible {
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-strong);
+    color: var(--ui-text-primary);
+    transform: none;
+}
+
+.composer-template-btn.active {
+    background: var(--ui-accent);
+    border-color: var(--ui-accent);
+    color: var(--ui-text-on-accent);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+
+/* ─── 27. Input Thumb (Reference images in composer) ─────────────────────────
+   Override: border, radius
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.input-thumb {
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-sm);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-standard),
+                box-shadow var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.input-thumb:hover {
+    border-color: var(--ui-border-focus);
+    box-shadow: var(--ui-shadow-sm);
+    transform: none;
+}
+
+.input-thumb-add {
+    border-color: var(--ui-border-default);
+    background: var(--ui-bg-soft);
+    color: var(--ui-text-secondary);
+    border-radius: var(--ui-radius-sm);
+}
+
+.input-thumb-add:hover,
+.input-thumb-add:focus-visible {
+    background: var(--ui-bg-surface);
+    color: var(--ui-text-primary);
+    border-color: var(--ui-border-strong);
+    transform: none;
+}
+
+
+/* ─── 28. Empty State Nodes ──────────────────────────────────────────────────
+   Target: .image-node.empty-node
+   Override: surface, border, shadow
+   NOT modified: position, width, min-height (affects coordinate math)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.image-node.empty-node {
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+    box-shadow: var(--ui-shadow-md);
+}
+
+.image-node.empty-node:hover {
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-shadow-md);
+}
+
+
+/* ─── 29. Prompt / Loop / MiniMax Node Surface ───────────────────────────────
+   Target: .image-node.prompt-smart-node, .loop-smart-node, .minimax-smart-node
+   Override: surface, border, shadow
+   NOT modified: position, padding (affects coordinate math/layout)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.image-node.prompt-smart-node,
+.image-node.loop-smart-node,
+.image-node.minimax-smart-node {
+    background: var(--ui-bg-surface-overlay);
+    border-color: var(--ui-border-default);
+    box-shadow: var(--ui-shadow-floating);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+
+.theme-dark .image-node.prompt-smart-node,
+.theme-dark .image-node.loop-smart-node,
+.theme-dark .image-node.minimax-smart-node {
+    background: var(--ui-bg-surface-overlay);
+    border-color: var(--ui-border-default);
+}
+
+
+/* ─── 30. Selection Box ──────────────────────────────────────────────────────
+   Target: .selection-box
+   Override: border-color, background
+   NOT modified: position, z-index
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.selection-box {
+    border: 1px solid rgba(28, 28, 26, .3);
+    background: rgba(28, 28, 26, .06);
+}
+
+.theme-dark .selection-box {
+    border-color: rgba(232, 232, 230, .3);
+    background: rgba(232, 232, 230, .06);
+}

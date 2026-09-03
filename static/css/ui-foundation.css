@@ -1,0 +1,225 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   Infinite Canvas — UI Foundation
+   Design System v1.0 — Phase 1
+
+   This file defines the unified design token system for the Infinite Canvas
+   project. All new UI tokens use the --ui-* namespace to avoid conflicts
+   with existing --page, --panel, --text, etc. variables.
+
+   Load order: smart-canvas.css → ui-foundation.css → ui-smart-canvas.css
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+
+/* ─── Light Theme (Default) ──────────────────────────────────────────────────── */
+
+:root {
+
+    /* ── Canvas ── */
+    --ui-bg-canvas:           #F5F5F4;
+    --ui-bg-canvas-grid:      rgba(0, 0, 0, .06);
+
+    /* ── Surfaces ── */
+    --ui-bg-surface:          #FFFFFF;
+    --ui-bg-surface-raised:   #FFFFFF;
+    --ui-bg-surface-overlay:  rgba(255, 255, 255, .92);
+    --ui-bg-hover:            rgba(0, 0, 0, .035);
+    --ui-bg-active:           rgba(0, 0, 0, .06);
+    --ui-bg-soft:             #F5F5F4;
+    --ui-bg-muted:            #EDEDEC;
+
+    /* ── Text ── */
+    --ui-text-primary:        #1C1C1A;
+    --ui-text-secondary:      #6B6B68;
+    --ui-text-tertiary:       #9C9C98;
+    --ui-text-placeholder:    #B5B5B2;
+    --ui-text-inverse:        #FFFFFF;
+    --ui-text-on-accent:      #FFFFFF;
+
+    /* ── Borders ── */
+    --ui-border-subtle:       rgba(0, 0, 0, .06);
+    --ui-border-default:      rgba(0, 0, 0, .10);
+    --ui-border-strong:       rgba(0, 0, 0, .18);
+    --ui-border-focus:        #1C1C1A;
+
+    /* ── Accent ── */
+    --ui-accent:              #1C1C1A;
+    --ui-accent-hover:        #2E2E2B;
+    --ui-accent-soft:         rgba(28, 28, 26, .08);
+
+    /* ── Semantic ── */
+    --ui-danger:              #DC2626;
+    --ui-danger-soft:         rgba(220, 38, 38, .08);
+    --ui-success:             #16A34A;
+    --ui-success-soft:        rgba(22, 163, 74, .08);
+    --ui-warning:             #CA8A04;
+    --ui-warning-soft:        rgba(202, 138, 4, .08);
+
+    /* ── Shadows ── */
+    --ui-shadow-xs:           0 1px 2px rgba(0, 0, 0, .04);
+    --ui-shadow-sm:           0 2px 6px rgba(0, 0, 0, .05), 0 1px 2px rgba(0, 0, 0, .03);
+    --ui-shadow-md:           0 4px 12px rgba(0, 0, 0, .06), 0 1px 3px rgba(0, 0, 0, .04);
+    --ui-shadow-floating:     0 8px 24px rgba(0, 0, 0, .08), 0 2px 6px rgba(0, 0, 0, .04);
+
+    /* ── Focus Ring ── */
+    --ui-focus-ring:          0 0 0 2px rgba(28, 28, 26, .12);
+
+    /* ── Scrollbar ── */
+    --ui-scrollbar-thumb:     rgba(0, 0, 0, .14);
+    --ui-scrollbar-thumb-hover: rgba(0, 0, 0, .22);
+    --ui-scrollbar-track:     transparent;
+}
+
+
+/* ─── Dark Theme ─────────────────────────────────────────────────────────────── */
+
+.theme-dark {
+
+    /* ── Canvas ── */
+    --ui-bg-canvas:           #121212;
+    --ui-bg-canvas-grid:      rgba(255, 255, 255, .05);
+
+    /* ── Surfaces ── */
+    --ui-bg-surface:          #1A1A1A;
+    --ui-bg-surface-raised:   #222222;
+    --ui-bg-surface-overlay:  rgba(26, 26, 26, .92);
+    --ui-bg-hover:            rgba(255, 255, 255, .05);
+    --ui-bg-active:           rgba(255, 255, 255, .08);
+    --ui-bg-soft:             #161616;
+    --ui-bg-muted:            #222222;
+
+    /* ── Text ── */
+    --ui-text-primary:        #E8E8E6;
+    --ui-text-secondary:      #9E9E9A;
+    --ui-text-tertiary:       #6E6E6A;
+    --ui-text-placeholder:    #545452;
+    --ui-text-inverse:        #1C1C1A;
+    --ui-text-on-accent:      #1C1C1A;
+
+    /* ── Borders ── */
+    --ui-border-subtle:       rgba(255, 255, 255, .06);
+    --ui-border-default:      rgba(255, 255, 255, .10);
+    --ui-border-strong:       rgba(255, 255, 255, .18);
+    --ui-border-focus:        #E8E8E6;
+
+    /* ── Accent ── */
+    --ui-accent:              #E8E8E6;
+    --ui-accent-hover:        #D4D4D2;
+    --ui-accent-soft:         rgba(232, 232, 230, .08);
+
+    /* ── Semantic ── */
+    --ui-danger:              #F87171;
+    --ui-danger-soft:         rgba(248, 113, 113, .10);
+    --ui-success:             #4ADE80;
+    --ui-success-soft:        rgba(74, 222, 128, .10);
+    --ui-warning:             #FACC15;
+    --ui-warning-soft:        rgba(250, 204, 21, .10);
+
+    /* ── Shadows ── */
+    --ui-shadow-xs:           0 1px 2px rgba(0, 0, 0, .16);
+    --ui-shadow-sm:           0 2px 6px rgba(0, 0, 0, .20), 0 1px 2px rgba(0, 0, 0, .12);
+    --ui-shadow-md:           0 4px 12px rgba(0, 0, 0, .24), 0 1px 3px rgba(0, 0, 0, .14);
+    --ui-shadow-floating:     0 8px 24px rgba(0, 0, 0, .32), 0 2px 6px rgba(0, 0, 0, .18);
+
+    /* ── Focus Ring ── */
+    --ui-focus-ring:          0 0 0 2px rgba(232, 232, 230, .14);
+
+    /* ── Scrollbar ── */
+    --ui-scrollbar-thumb:     rgba(255, 255, 255, .14);
+    --ui-scrollbar-thumb-hover: rgba(255, 255, 255, .24);
+    --ui-scrollbar-track:     transparent;
+}
+
+
+/* ─── Spacing ────────────────────────────────────────────────────────────────── */
+
+:root {
+    --ui-space-1:   4px;
+    --ui-space-2:   8px;
+    --ui-space-3:   12px;
+    --ui-space-4:   16px;
+    --ui-space-5:   20px;
+    --ui-space-6:   24px;
+    --ui-space-8:   32px;
+    --ui-space-10:  40px;
+    --ui-space-12:  48px;
+}
+
+
+/* ─── Radius ─────────────────────────────────────────────────────────────────── */
+
+:root {
+    --ui-radius-xs:   6px;
+    --ui-radius-sm:   8px;
+    --ui-radius-md:   10px;
+    --ui-radius-lg:   12px;
+    --ui-radius-xl:   16px;
+    --ui-radius-pill:  999px;
+}
+
+
+/* ─── Typography ─────────────────────────────────────────────────────────────── */
+
+:root {
+    --ui-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --ui-font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+    --ui-text-xs:  11px;
+    --ui-text-sm:  12px;
+    --ui-text-md:  13px;
+    --ui-text-lg:  15px;
+    --ui-text-xl:  18px;
+
+    --ui-leading-tight:   1.3;
+    --ui-leading-normal:  1.5;
+    --ui-leading-relaxed: 1.6;
+
+    --ui-weight-normal:    400;
+    --ui-weight-medium:    500;
+    --ui-weight-semibold:  600;
+}
+
+
+/* ─── Motion ─────────────────────────────────────────────────────────────────── */
+
+:root {
+    --ui-duration-fast:    120ms;
+    --ui-duration-normal:  160ms;
+    --ui-duration-slow:    240ms;
+
+    --ui-ease-standard:    cubic-bezier(.4, 0, .2, 1);
+    --ui-ease-decelerate:  cubic-bezier(0, 0, .2, 1);
+    --ui-ease-accelerate:  cubic-bezier(.4, 0, 1, 1);
+}
+
+
+/* ─── Z-Index (Reference Tokens — NOT replacing existing values in Phase 1) ── */
+
+:root {
+    --ui-z-canvas:    0;
+    --ui-z-node:      2;
+    --ui-z-node-selected:  10;
+    --ui-z-node-dragging:  12;
+    --ui-z-selection:      18;
+    --ui-z-floating:  20;
+    --ui-z-composer:  30;
+    --ui-z-popover:   50;
+    --ui-z-panel:     55;
+    --ui-z-header:    56;
+    --ui-z-drawer:    57;
+    --ui-z-toast:     60;
+    --ui-z-menu:      75;
+    --ui-z-modal-backdrop: 85;
+    --ui-z-modal:     90;
+    --ui-z-lightbox:  96;
+    --ui-z-tooltip:   120;
+}
+
+
+/* ─── Icon Sizing ────────────────────────────────────────────────────────────── */
+
+:root {
+    --ui-icon-sm:   14px;
+    --ui-icon-md:   16px;
+    --ui-icon-lg:   18px;
+    --ui-icon-xl:   20px;
+}
