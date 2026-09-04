@@ -363,3 +363,48 @@ When Phase 2 implementation begins, the following checks must pass:
 - [ ] Light / Dark theme seamless toggle
 - [ ] Browser Console: 0 JavaScript errors, 0 resource 404s
 - [ ] Zero diff on `canvas-list.js`, `smart-canvas.js`, and `main.py`
+
+---
+
+## Phase 2B Implementation Notes
+
+**Implementation branch:** `feature/ui-workspace-shell-v1`
+
+### Scope delivered
+
+- Added `static/css/ui-canvas-list.css` as an additive Workspace-only override layer.
+- Loaded styles in the order `canvas-list.css` → `theme.css` → `ui-foundation.css` → `ui-canvas-list.css`.
+- Migrated the Workspace canvas surface, 272px sidebar, topbar, primary CTA, secondary controls,
+  floating menus, creation shell, trash shell, typography, focus states, and scrollbars to Phase 1
+  `--ui-*` design tokens.
+- Preserved the existing Workspace DOM, all IDs and data attributes, JavaScript event targets, and
+  light/dark theme propagation.
+- Kept the Project Card and empty-state structures frozen. Card overrides are limited to tokenized
+  color, border, shadow, and typography; no dimensions, position model, or transforms were added.
+
+### Geometry and runtime safety
+
+- `#board` receives background properties only. Its padding, margin, border, position, dimensions,
+  and transform remain controlled by the existing stylesheet/runtime.
+- `#boardWorld` receives no Phase 2B override.
+- `.ws-card` receives no width, height, position, inset, padding, margin, or transform override.
+- `screenToWorld`, `applyViewport`, viewport state, drag thresholds, `board_x`, and `board_y` are unchanged.
+- `static/js/canvas-list.js`, `static/js/smart-canvas.js`, and `main.py` have zero diff.
+- Override audit: `!important` 0; `pointer-events` 0; `z-index` 0; `transform` declarations 0;
+  geometry-affecting overrides on `#board`, `#boardWorld`, and `.ws-card` 0.
+
+### Browser QA
+
+Real Chrome verification covered Workspace load, populated project/card rendering, pan, cursor-centered
+zoom, reset view, card drag, `board_x`/`board_y` persistence after reload, card click/open and return,
+New Canvas creation, project creation and switching, Paste visibility/action, Refresh, Trash overlay,
+context menu, and both Light and Dark themes. Temporary QA project/canvas records were removed by their
+exact IDs after the checks. Browser console errors: 0. The Workspace HTML, legacy CSS, foundation CSS,
+Phase 2B CSS, and JavaScript resources all returned HTTP 200.
+
+### Screenshot evidence
+
+Light-before, Light-after, and Dark-after states were visually captured and inspected in the controlled
+Chrome session. Automated local-file export was blocked by the browser security policy, so the required
+`workspace_*_phase2b.png` files are not yet written to `docs/ui-redesign/screenshots/`. No alternate
+browser or policy bypass was used.

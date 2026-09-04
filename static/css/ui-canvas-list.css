@@ -1,0 +1,559 @@
+/* Infinite Canvas — Workspace Shell / Chrome
+   Phase 2B additive overrides.
+   Geometry contracts for #board, #boardWorld, and .ws-card remain untouched. */
+
+body {
+    background: var(--ui-bg-canvas);
+    color: var(--ui-text-primary);
+    font-family: var(--ui-font-sans);
+}
+
+/* Workspace canvas surface: background properties only. */
+#board.ws-board {
+    background-color: var(--ui-bg-canvas);
+    background-image:
+        linear-gradient(transparent, transparent),
+        linear-gradient(transparent, transparent),
+        radial-gradient(circle, var(--ui-bg-canvas-grid) 1px, transparent 1px);
+}
+
+/* Sidebar */
+.ws-sidebar {
+    flex-basis: 272px;
+    width: 272px;
+    background: var(--ui-bg-surface-overlay);
+    border-color: var(--ui-border-subtle);
+    backdrop-filter: blur(20px);
+}
+
+.ws-side-head {
+    padding: var(--ui-space-5) var(--ui-space-4) var(--ui-space-3);
+}
+
+.ws-side-title {
+    color: var(--ui-text-primary);
+    font-size: var(--ui-text-lg);
+    font-weight: var(--ui-weight-semibold);
+}
+
+.ws-side-add,
+.ws-mini-btn,
+.ws-proj-act {
+    color: var(--ui-text-secondary);
+    background: transparent;
+    border-color: transparent;
+    border-radius: var(--ui-radius-sm);
+    box-shadow: none;
+    transition:
+        color var(--ui-duration-fast) var(--ui-ease-standard),
+        background var(--ui-duration-fast) var(--ui-ease-standard),
+        border-color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.ws-side-add {
+    border-color: var(--ui-border-default);
+    background: var(--ui-bg-surface);
+}
+
+.ws-side-add:hover,
+.ws-mini-btn:hover,
+.ws-proj-act:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+    border-color: var(--ui-border-default);
+    box-shadow: none;
+}
+
+.ws-newproj-row {
+    margin: 0 var(--ui-space-3) var(--ui-space-3);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    background: var(--ui-bg-surface);
+    box-shadow: var(--ui-shadow-sm);
+}
+
+.ws-newproj-input,
+.ws-project-name-input {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-mini-btn.primary {
+    color: var(--ui-text-on-accent);
+    background: var(--ui-accent);
+    border-color: var(--ui-accent);
+}
+
+.ws-project-list {
+    padding: var(--ui-space-1) var(--ui-space-3) var(--ui-space-3);
+    gap: var(--ui-space-1);
+    scrollbar-color: var(--ui-scrollbar-thumb) var(--ui-scrollbar-track);
+    scrollbar-width: thin;
+}
+
+.ws-project-row {
+    min-height: 40px;
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-secondary);
+    transition:
+        color var(--ui-duration-normal) var(--ui-ease-standard),
+        background var(--ui-duration-normal) var(--ui-ease-standard),
+        box-shadow var(--ui-duration-normal) var(--ui-ease-standard);
+}
+
+.ws-project-row:hover {
+    background: var(--ui-bg-hover);
+}
+
+.ws-project-row.active,
+.theme-dark .ws-project-row.active {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-active);
+    box-shadow: inset 3px 0 0 var(--ui-accent);
+}
+
+.ws-project-row.active .ws-project-name,
+.ws-project-row.active .ws-project-icon,
+.ws-project-row.active .ws-project-count,
+.theme-dark .ws-project-row.active .ws-project-name,
+.theme-dark .ws-project-row.active .ws-project-icon,
+.theme-dark .ws-project-row.active .ws-project-count {
+    color: var(--ui-text-primary);
+}
+
+.ws-project-icon {
+    color: var(--ui-text-tertiary);
+}
+
+.ws-project-name {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-project-count,
+.ws-project-row.active .ws-project-count,
+.theme-dark .ws-project-row.active .ws-project-count {
+    color: var(--ui-text-tertiary);
+    background: transparent;
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-project-row.active .ws-proj-act,
+.theme-dark .ws-project-row.active .ws-proj-act {
+    color: var(--ui-text-secondary);
+    background: transparent;
+}
+
+.ws-project-row.active .ws-proj-act:hover,
+.theme-dark .ws-project-row.active .ws-proj-act:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+}
+
+.ws-project-confirm {
+    border: 1px solid var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    background: var(--ui-bg-surface-raised);
+    box-shadow: var(--ui-shadow-sm);
+}
+
+.ws-project-confirm-title {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-confirm-btn,
+.ws-cancel-btn {
+    border-radius: var(--ui-radius-sm);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-side-foot {
+    padding: var(--ui-space-3);
+    border-color: var(--ui-border-subtle);
+    background: transparent;
+}
+
+.ws-trash-entry {
+    min-height: 40px;
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-text-secondary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-trash-entry:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+}
+
+.ws-trash-entry.active {
+    color: var(--ui-danger);
+    background: var(--ui-danger-soft);
+    border-color: transparent;
+}
+
+.ws-trash-badge {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-muted);
+    font-weight: var(--ui-weight-medium);
+}
+
+/* Workspace header */
+.ws-topbar,
+.ws-trash-head {
+    min-height: 64px;
+    padding: var(--ui-space-3) var(--ui-space-5);
+    background: var(--ui-bg-surface-overlay);
+    border-color: var(--ui-border-subtle);
+    backdrop-filter: blur(20px);
+}
+
+.ws-topbar-left {
+    gap: var(--ui-space-3);
+}
+
+.ws-board-name {
+    color: var(--ui-text-primary);
+    font-size: var(--ui-text-xl);
+    font-weight: var(--ui-weight-semibold);
+    letter-spacing: -.01em;
+}
+
+.ws-board-count {
+    color: var(--ui-text-tertiary);
+    background: var(--ui-bg-soft);
+    font-size: var(--ui-text-xs);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-topbar-right {
+    gap: var(--ui-space-2);
+}
+
+.ws-icon-btn,
+.ws-paste-btn {
+    height: 38px;
+    border: 1px solid var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-surface);
+    font-size: var(--ui-text-sm);
+    font-weight: var(--ui-weight-medium);
+    box-shadow: none;
+    transition:
+        color var(--ui-duration-fast) var(--ui-ease-standard),
+        background var(--ui-duration-fast) var(--ui-ease-standard),
+        border-color var(--ui-duration-fast) var(--ui-ease-standard),
+        box-shadow var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.ws-icon-btn:hover,
+.ws-paste-btn:hover,
+.theme-dark .ws-paste-btn:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+.theme-dark .ws-paste-btn {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+    box-shadow: none;
+}
+
+.ws-primary-btn,
+.theme-dark .ws-primary-btn {
+    height: 38px;
+    padding: 0 var(--ui-space-4);
+    border: 1px solid var(--ui-accent);
+    border-radius: var(--ui-radius-md);
+    color: var(--ui-text-on-accent);
+    background: var(--ui-accent);
+    font-size: var(--ui-text-sm);
+    font-weight: var(--ui-weight-semibold);
+    box-shadow: var(--ui-shadow-xs);
+    transition:
+        color var(--ui-duration-fast) var(--ui-ease-standard),
+        background var(--ui-duration-fast) var(--ui-ease-standard),
+        border-color var(--ui-duration-fast) var(--ui-ease-standard),
+        box-shadow var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.ws-primary-btn:hover,
+.theme-dark .ws-primary-btn:hover {
+    color: var(--ui-text-on-accent);
+    background: var(--ui-accent-hover);
+    border-color: var(--ui-accent-hover);
+    box-shadow: var(--ui-shadow-sm);
+}
+
+.ws-primary-btn:active,
+.ws-icon-btn:active,
+.ws-paste-btn:active,
+.ws-side-add:active,
+.ws-mini-btn:active,
+.ws-trash-entry:active,
+.ws-pop-item:active,
+.ws-pop-proj:active {
+    background: var(--ui-bg-active);
+}
+
+.ws-primary-btn:active {
+    color: var(--ui-text-on-accent);
+    background: var(--ui-accent-hover);
+}
+
+.ws-side-add:focus-visible,
+.ws-mini-btn:focus-visible,
+.ws-icon-btn:focus-visible,
+.ws-primary-btn:focus-visible,
+.ws-paste-btn:focus-visible,
+.ws-trash-entry:focus-visible,
+.ws-trash-act:focus-visible,
+.ws-pop-item:focus-visible,
+.ws-pop-proj:focus-visible,
+.ws-create-toggle-btn:focus-visible,
+.ws-create-confirm:focus-visible,
+.ws-create-cancel:focus-visible {
+    outline: none;
+    box-shadow: var(--ui-focus-ring);
+}
+
+/* Frozen card system: token normalization only, no geometry or transform. */
+.ws-card {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+.ws-card:hover {
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-shadow-md);
+}
+
+.ws-card.cc-marked {
+    border-color: var(--ui-border-strong);
+}
+
+.ws-card-kind,
+.ws-card-title,
+.ws-card-title-input {
+    font-weight: var(--ui-weight-semibold);
+}
+
+.ws-card-title,
+.ws-card-title-input {
+    color: var(--ui-text-primary);
+}
+
+.ws-card-kind.classic,
+.ws-card-meta {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+}
+
+.ws-card-time,
+.ws-card-nodes {
+    color: var(--ui-text-tertiary);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-card-menu {
+    color: var(--ui-text-tertiary);
+}
+
+.ws-card-menu:hover {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-hover);
+    border-color: var(--ui-border-subtle);
+}
+
+/* Empty-state shell remains structurally frozen in Phase 2B. */
+.ws-board-empty {
+    color: var(--ui-text-tertiary);
+}
+
+.ws-board-empty-icon {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+    box-shadow: var(--ui-shadow-sm);
+}
+
+.ws-board-empty-text {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-semibold);
+}
+
+.ws-board-empty-sub {
+    color: var(--ui-text-secondary);
+    font-weight: var(--ui-weight-normal);
+}
+
+/* Floating surfaces */
+.ws-card-pop,
+.ws-create-card {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-surface-overlay);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-lg);
+    box-shadow: var(--ui-shadow-floating);
+    backdrop-filter: blur(20px);
+}
+
+.ws-pop-item,
+.ws-pop-proj {
+    color: var(--ui-text-primary);
+    border-radius: var(--ui-radius-sm);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-pop-item:hover,
+.ws-pop-proj:hover {
+    background: var(--ui-bg-hover);
+}
+
+.ws-pop-sep {
+    background: var(--ui-border-subtle);
+}
+
+.ws-pop-sub-title {
+    color: var(--ui-text-tertiary);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-create-title,
+.ws-trash-head-title {
+    color: var(--ui-text-primary);
+    font-weight: var(--ui-weight-semibold);
+}
+
+.ws-create-input {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-create-input:focus {
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-focus);
+    box-shadow: var(--ui-focus-ring);
+}
+
+.ws-create-toggle {
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+    border-radius: var(--ui-radius-md);
+}
+
+.ws-create-toggle-btn,
+.ws-create-confirm,
+.ws-create-cancel,
+.ws-trash-act,
+.ws-trash-confirm-actions button,
+.ws-card-delete-actions button {
+    border-radius: var(--ui-radius-sm);
+    font-weight: var(--ui-weight-medium);
+}
+
+.ws-create-toggle-btn {
+    color: var(--ui-text-secondary);
+}
+
+.ws-create-toggle-btn.active,
+.theme-dark .ws-create-toggle-btn.active,
+.ws-create-confirm,
+.theme-dark .ws-create-confirm {
+    color: var(--ui-text-on-accent);
+    background: var(--ui-accent);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+.ws-create-cancel {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+}
+
+.ws-trash-panel {
+    background: var(--ui-bg-canvas);
+}
+
+.ws-trash-note {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+    border-radius: var(--ui-radius-md);
+    font-weight: var(--ui-weight-normal);
+}
+
+.theme-dark .ws-trash-note {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-subtle);
+}
+
+.ws-trash-list,
+.ws-pop-scroll {
+    scrollbar-color: var(--ui-scrollbar-thumb) var(--ui-scrollbar-track);
+    scrollbar-width: thin;
+}
+
+.ws-trash-empty {
+    color: var(--ui-text-tertiary);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-trash-card {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-surface);
+    border-color: var(--ui-border-default);
+    box-shadow: var(--ui-shadow-xs);
+}
+
+.ws-trash-act {
+    color: var(--ui-text-secondary);
+    background: var(--ui-bg-soft);
+    border-color: var(--ui-border-default);
+}
+
+.ws-card-delete-confirm,
+.ws-trash-confirm {
+    background: var(--ui-danger-soft);
+    border-color: var(--ui-danger);
+    border-radius: var(--ui-radius-md);
+}
+
+.ws-status {
+    color: var(--ui-text-primary);
+    background: var(--ui-bg-surface-overlay);
+    border: 1px solid var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
+    box-shadow: var(--ui-shadow-floating);
+    font-weight: var(--ui-weight-medium);
+    backdrop-filter: blur(20px);
+}
+
+@media (max-width: 760px) {
+    .ws-sidebar {
+        width: 100%;
+    }
+
+    .ws-topbar {
+        padding: var(--ui-space-3);
+    }
+}
+
+html[data-studio-scale="off"].studio-scale-managed .ws-sidebar {
+    flex-basis: 272px;
+    width: 272px;
+    border-color: var(--ui-border-subtle);
+}
