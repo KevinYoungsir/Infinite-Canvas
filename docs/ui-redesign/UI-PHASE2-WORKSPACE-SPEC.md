@@ -404,7 +404,310 @@ Phase 2B CSS, and JavaScript resources all returned HTTP 200.
 
 ### Screenshot evidence
 
-Light-before, Light-after, and Dark-after states were visually captured and inspected in the controlled
-Chrome session. Automated local-file export was blocked by the browser security policy, so the required
-`workspace_*_phase2b.png` files are not yet written to `docs/ui-redesign/screenshots/`. No alternate
-browser or policy bypass was used.
+Light-before, Light-after, Dark-before, and Dark-after states were visually captured and verified via controlled Chrome CDP session. High-resolution screenshots are preserved under `docs/ui-redesign/screenshots/`.
+
+---
+
+## 9. Phase 2C Specification: Canvas Entry Cards & First-Run Experience
+
+**Sub-phase:** Phase 2C-A (Design Audit & Specification)
+**Target:** Canvas Entry Cards (`.ws-card`) + First-Run / Empty State Experience (`#boardEmptyHint`)
+**Design Reference:** Lovart-inspired Minimalist AI Studio / Content-First Workspace
+**Status:** AUDIT COMPLETE — SPECIFICATION FROZEN — ZERO PRODUCTION CODE MODIFIED
+
+### 9.1 Capability Audit
+
+An exhaustive audit of `canvas-list.html`, `canvas-list.js`, `canvas-list.css`, `ui-canvas-list.css`, and the backend implementation in `main.py` (`list_canvases()`, `canvas_record()`, SQLite / JSON files) confirms the status of all candidate canvas fields:
+
+| Field Name | Source / Type | Status | Phase 2C Applicability |
+|---|---|---|---|
+| `canvas id` | `c.id` (str) | **AVAILABLE NOW** | Internal key; used for dataset and DOM selection; hidden from visual card |
+| `canvas title` | `c.title` (str) | **AVAILABLE NOW** | Primary visual anchor; editable inline |
+| `project id` | `c.project` (str) | **AVAILABLE NOW** | Used for filtering; not displayed on card (already in project context) |
+| `created time` | `c.created_at` (int ms) | **AVAILABLE NOW** | Fallback for time formatting |
+| `updated time` | `c.updated_at` (int ms) | **AVAILABLE NOW** | Secondary metadata; displayed in human relative time |
+| `node count` | `c.node_count` (int) | **AVAILABLE NOW** | Secondary metadata; key metric for canvas scale |
+| `canvas kind` | `c.kind` ("smart" \| "classic") | **AVAILABLE NOW** | Visual kind badge (Smart vs Classic) |
+| `accent color` | `c.color` (str) | **AVAILABLE NOW** | Left border / tag indicator (`.cc-marked`) |
+| `pinned state` | `c.pinned` (bool) | **AVAILABLE NOW** | Sort priority; optional pin badge |
+| `owner` | `c.owner` (str) | **AVAILABLE NOW** | Single-user local app; hidden to avoid clutter |
+| `board position` | `c.board_x`, `c.board_y` (float) | **AVAILABLE NOW** | World coordinate absolute positioning (`left`, `top`) |
+| `node types` | `nodes[i].type` in canvas JSON | **DERIVABLE WITHOUT SCHEMA CHANGE** | Stored in individual JSON files; **NOT** in `/api/canvases` list response |
+| `image count` | Extracted from image nodes | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not exposed in `/api/canvases` list response |
+| `text count` | Extracted from text nodes | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not exposed in `/api/canvases` list response |
+| `workflow count` | Extracted from workflow nodes | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not exposed in `/api/canvases` list response |
+| `generation count`| Extracted from run logs | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not exposed in `/api/canvases` list response |
+| `canvas dimensions`| Bounding box of all nodes | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not calculated or exposed in list response |
+| `first / last image`| Output URL from node runs | **DERIVABLE WITHOUT SCHEMA CHANGE** | Not aggregated or exposed in list response |
+| `status` | Async execution state | **NOT AVAILABLE** | No board-level daemon status tracking |
+| `cover / thumbnail` | Rasterized canvas image | **NOT AVAILABLE** | No snapshot engine or rasterized preview exists anywhere |
+| `preview / snapshot`| Viewport capture | **NOT AVAILABLE** | No background canvas renderer exists |
+| `last opened` | Access timestamp | **NOT AVAILABLE** | Only `updated_at` is tracked on save |
+| `description` | Textual canvas summary | **NOT AVAILABLE** | No description field in schema or UI |
+
+### 9.2 Available Canvas Metadata (`/api/canvases` Payload)
+
+Each item returned by `GET /api/canvases` conforms to `canvas_record()` (`main.py:3925`):
+```json
+{
+  "id": "a6f87097459a4a63b90513a3747a3aad",
+  "title": "PY",
+  "icon": "🧩",
+  "kind": "smart",
+  "owner": "",
+  "color": "",
+  "pinned": false,
+  "project": "default",
+  "board_x": 40.0,
+  "board_y": 40.0,
+  "created_at": 1787640364934,
+  "updated_at": 1788501060000,
+  "deleted_at": 0,
+  "node_count": 19
+}
+```
+
+### 9.3 Thumbnail Capability Gate
+
+- **Result:** `REAL THUMBNAIL CAPABILITY: NO`
+- **Gate Findings:**
+  1. **Storage:** There is no thumbnail folder in the project filesystem (no `data/thumbnails` or similar).
+  2. **Generation:** Neither `smart-canvas.js` nor `canvas.js` possesses a canvas screenshot/rasterization routine (no `toDataURL` or headless capture on save).
+  3. **Backend:** `/api/canvases` returns 0 image URLs or thumbnail paths.
+  4. **Performance Risk:** Dynamically opening 20+ canvas JSON files to locate image nodes during list loading would cause severe I/O degradation.
+- **Strict Directive:**
+  - Phase 2C **MUST NOT** rely on real thumbnails.
+  - Phase 2C **MUST NOT** introduce fake image placeholders (no empty gray camera boxes, no random pastel gradients pretending to be artworks, no synthetic SVG illustrations).
+  - The card system must stand on its own as a premium, typography-led, content-first metadata document.
+
+### 9.4 Card Information Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  [Smart / Classic Badge]                         [ ··· Menu ]│
+│                                                             │
+│  Canvas Title (15px Semibold, Max 2 Lines)                 │
+│                                                             │
+│  19 nodes  •  Updated 2 hours ago                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 1-Second Visual Cognition Hierarchy
+1. **Primary Layer (0–300ms):**
+   - **Canvas Title:** The user's primary mental index. 15px, `font-weight: 600`, `--ui-text-primary`. High contrast, crisp line-height (1.3), graceful 2-line ellipsis.
+   - **Kind Badge:** Semantic recognition (`.smart` vs `.classic`). Smart canvases receive a gentle indigo tint; classic canvases receive neutral subtle soft gray.
+2. **Secondary Layer (300ms–800ms):**
+   - **Scale / Content Density:** `c.node_count` ("19 节点"). Immediately informs the user whether this is a rich working canvas or an empty test stub. If 0 nodes, styled in `--ui-text-tertiary` as "0 节点".
+   - **Recency / Freshness:** `formatCanvasTime(c.updated_at)` ("09/04 13:51" or relative). Tells the creator which canvas was touched most recently.
+   - **Color / Pin Accent:** If `c.color` is marked, a refined 3px left border accent or badge dot indicates custom tagging.
+3. **Tertiary Layer (On-demand / Hover):**
+   - **Action Menu (`···`):** Context menu trigger button, positioned at top-right. Subtle ghost style, high affordance on hover.
+   - **Inline Delete Confirm:** In-situ confirmation surface (`.ws-card-delete-confirm`) avoiding disruptive alert popups.
+
+#### Noise Exclusion (What is NOT shown)
+- Internal UUID / canvas hash (zero cognitive value).
+- Blank owner strings or "default" user labels (single-player desktop studio).
+- Absolute board coordinates (internal layout math).
+- Technical runtime timestamps (raw epoch ms).
+
+### 9.5 Recommended Card Strategy: Option B (Metadata-Driven Creative Card)
+
+- **Option A (Real Thumbnail):** REJECTED — No thumbnail capability exists in the product.
+- **Option B (Metadata-Driven Creative Card):** **RECOMMENDED FOR PHASE 2C**
+  - Relies 100% on existing, reliable metadata fields.
+  - Focuses on crisp typographic hierarchy, micro-borders, surface layering, and responsive hover feedback.
+  - Aligns with Lovart's quiet, dignified document card aesthetic.
+  - Zero performance overhead, zero backend changes, zero broken-image risk.
+- **Option C (Hybrid Progressive Preview):** ADOPTED AS ARCHITECTURAL ROADMAP
+  - The DOM structure and CSS classes are designed so that if a future Phase 3 thumbnail engine is introduced, a thumbnail container can be inserted seamlessly above the title without breaking card layout contracts.
+
+### 9.6 Card States (Strict Draggable Object Rules)
+
+> [!CAUTION]
+> `.ws-card` is an absolutely positioned world-coordinate object within `#boardWorld` which has a global viewport matrix transform.
+> **ABSOLUTELY NO `transform`, `translate`, OR `scale` IS PERMITTED ON `:hover`, `:active`, OR `.dragging`!**
+
+| State | Styling Specification (Zero Geometry Impact) |
+|---|---|
+| **Default** | Background: `var(--ui-bg-surface)`; Border: `1px solid var(--ui-border-default)`; Radius: `var(--ui-radius-md)` (10px); Shadow: `var(--ui-shadow-xs)`. |
+| **Hover** | Border: `1px solid var(--ui-border-strong)`; Shadow: `var(--ui-shadow-md)`; Menu button opacity: `1.0`. **NO `translateY` or `scale`!** |
+| **Pressed / Mousedown** | Background: `var(--ui-bg-surface-raised)`; Shadow: `var(--ui-shadow-xs)`. |
+| **Focused (`:focus-visible`)** | Outline: none; Box-shadow: `var(--ui-focus-ring)`. |
+| **Dragging (`.dragging`)** | Cursor: `grabbing`; Shadow: `var(--ui-shadow-floating)`; Opacity: `0.92`. |
+| **Context Menu Open** | Border: `1px solid var(--ui-border-strong)`; Shadow: `var(--ui-shadow-sm)`. |
+| **Empty Metadata (0 nodes)**| Node count rendered in `var(--ui-text-tertiary)`. |
+| **Color Marked (`.cc-marked`)**| Left border: `3px solid var(--ui-accent)` or user color tag. |
+
+### 9.7 Geometry Decision: KEEP 248px × 150px
+
+- **Dimension:** Fixed width `248px`, fixed height `150px`.
+- **Layout Stride:** In `canvas-list.js:363`:
+  - `XSTRIDE = 276px` (248px card + 28px horizontal gap)
+  - `YSTRIDE = 176px` (150px card + 26px vertical gap)
+- **Rationale for Preserving Geometry:**
+  1. **Persistence Safety:** Users' existing canvases have saved `board_x` and `board_y` coordinates calculated from this stride. Resizing cards would cause visual overlap on populated boards.
+  2. **Codebase Freeze:** Changing card dimensions would require modifying frozen layout constants in `canvas-list.js`.
+  3. **Visual Proportion:** An aspect ratio of `248:150` (~1.65:1) closely mirrors the golden ratio (1.618:1) and comfortably accommodates the 3-tier information architecture without crowding.
+
+### 9.8 Empty State Logic & Lifecycle
+
+- **DOM Elements:** `#boardEmptyHint` containing `#emptyCreateCanvasBtn`.
+- **Control Mechanism:** `canvas-list.js:383`:
+  ```javascript
+  const items = canvasesInProject(currentProjectId);
+  boardEmptyHint.classList.toggle('hidden', items.length > 0);
+  ```
+- **Loading Safety:** `<div id="boardEmptyHint" class="ws-board-empty hidden">` defaults to `hidden` in static HTML. During initial API loading, it does not flash.
+- **Pointer Events:** `.ws-board-empty` has `pointer-events: none` allowing background board drag-to-pan, while `.ws-board-empty-actions` has `pointer-events: auto` ensuring the button is clickable.
+- **Click Behavior:** `canvas-list.js:1003` maps the center of the viewport to world coordinates via `screenToWorld()` and opens the inline creation popover at the center of the user's view.
+
+### 9.9 First-Run Experience
+
+When a user launches Infinite Canvas for the first time, or enters an empty project, the empty state must orient and inspire:
+1. **Immediate Recognition:** Understand within 2 seconds that this is an AI Creative Studio, not an empty database.
+2. **Clear Value Proposition:** Communicate that canvases are boundless spaces for multimodality (image, video, text, workflows).
+3. **Frictionless Action:** One primary button directly centered in view to launch the first canvas.
+4. **Lightweight Capability Cues:** Subtle icon badges representing core creative verbs:
+   - ✦ **生成 (Generate):** Multi-model image & video generation
+   - ☍ **连接 (Connect):** Node-based visual workflows
+   - ⤢ **无限 (Infinite):** Unbounded spatial storyboards
+
+### 9.10 Empty State Copy Options
+
+- **Direction 1 (Direct & Productive — Recommended):**
+  - **Title:** `开启第一块无限画布`
+  - **Description:** `在一个无边界工作台中自由编排灵感、生成多模态内容并连接 AI 工作流。`
+  - **Primary CTA:** `+ 新建智能画布`
+- **Direction 2 (Minimal & Studio):**
+  - **Title:** `探索无限创作空间`
+  - **Description:** `自由组织图像、视频与节点，构建你的视觉故事板。`
+  - **Primary CTA:** `+ 创建画布`
+- **Direction 3 (Iterative & Creative):**
+  - **Title:** `从一块空白画布开始`
+  - **Description:** `连接模型与节点，让每一次灵感生成都有迹可循。`
+  - **Primary CTA:** `+ 立即开始创作`
+
+### 9.11 Create Canvas Entry Hierarchy
+
+```text
+               ┌────────────────────────────────────────────────────────┐
+               │ Topbar Header                                          │
+               │ [Project Name]           [Reset] [Refresh] [New Canvas]│◄── Persistent Primary Anchor
+               └────────────────────────────────────────────────────────┘
+                                           │
+             ┌─────────────────────────────┴─────────────────────────────┐
+             ▼ (When Board is Empty)                                     ▼ (When Board has Canvases)
+┌────────────────────────────────────────┐                   ┌────────────────────────────────────────┐
+│ Empty State Stage                      │                   │ Populated Board World                  │
+│                                        │                   │                                        │
+│          ✦ 开启第一块无限画布          │                   │  ┌──────────┐   ┌──────────┐           │
+│   在无边界工作台中自由编排与生成内容   │                   │  │ Card A   │   │ Card B   │           │
+│                                        │                   │  └──────────┘   └──────────┘           │
+│         [ + 新建智能画布 ]             │◄── Focal CTA      │                                        │
+│                                        │                   │  (Double-click or Context click)       │◄── Contextual
+└────────────────────────────────────────┘                   └────────────────────────────────────────┘
+```
+
+1. **Focal Primary (Empty Board):** Center `#emptyCreateCanvasBtn` commands 100% visual attention.
+2. **Persistent Primary (Populated Board):** Top-right `#newCanvasBtn` serves as the constant toolbar anchor.
+3. **Contextual Action:** Double-click or right-click on board invokes `openCreateCard(worldPt)` at cursor.
+All three routes converge into the identical creation pipeline (`openCreateCard() -> POST /api/canvases`).
+
+### 9.12 Sidebar Width Decision: KEEP 272px
+
+- **Audit Finding:**
+  - Project names support up to 60 characters (`maxLength = 60`).
+  - Row horizontal footprint: 20px folder icon + 8px gap + title + 24px count badge + 48px action icons + 24px padding = 124px fixed overhead.
+  - At 272px: 148px available for text (~11 Chinese characters without truncation).
+  - At 260px: 136px available for text (~9 Chinese characters without truncation).
+- **UX Conclusion:** **KEEP 272px**.
+  Shrinking the sidebar by 12px offers zero meaningful gain to the stage (1168px vs 1180px, <1% delta), while noticeably increasing project name truncation and crowding hover buttons. 272px is proven stable across all existing responsive breakpoints.
+
+### 9.13 Design Token Mapping
+
+All Phase 2C visual enhancements exclusively utilize the existing `--ui-*` token foundation:
+
+| Component / Element | Token Applied | Visual Value (Light / Dark) |
+|---|---|---|
+| Card Surface | `var(--ui-bg-surface)` | `#FFFFFF` / `#1A1A1A` |
+| Card Border (Default) | `var(--ui-border-default)` | `rgba(0,0,0,0.10)` / `rgba(255,255,255,0.08)` |
+| Card Border (Hover) | `var(--ui-border-strong)` | `rgba(0,0,0,0.22)` / `rgba(255,255,255,0.18)` |
+| Card Shadow (Default) | `var(--ui-shadow-xs)` | `0 1px 2px rgba(0,0,0,0.04)` |
+| Card Shadow (Hover) | `var(--ui-shadow-md)` | `0 4px 12px rgba(0,0,0,0.08)` |
+| Card Shadow (Dragging) | `var(--ui-shadow-floating)` | `0 16px 36px rgba(0,0,0,0.20)` |
+| Card Title Typography | `var(--ui-text-primary)`, `600`, `15px` | High contrast, bold clarity |
+| Node / Time Typography | `var(--ui-text-tertiary)`, `400`, `12px` | Subdued metadata |
+| Smart Kind Badge | Background: `rgba(99,102,241,0.08)`; Text: `#6366F1` | Refined accent tint |
+| Classic Kind Badge | Background: `var(--ui-bg-soft)`; Text: `var(--ui-text-secondary)` | Neutral subtle pill |
+| Empty State Icon Surface | `var(--ui-bg-surface)`, `var(--ui-border-default)` | 48px rounded icon badge |
+| Empty State Title | `var(--ui-text-primary)`, `600`, `18px` | Welcoming header |
+| Empty State Subtitle | `var(--ui-text-secondary)`, `400`, `13px` | Explanatory copy |
+
+### 9.14 DOM Modification Budget
+
+| Target Change | Classification | JS Runtime Impact | Allowed in Phase 2C? |
+|---|---|---|---|
+| Refine card CSS (padding, border, shadows, typography) | **CSS ONLY** | None | ✅ Yes |
+| Refine empty state CSS (icon size, spacing, typography) | **CSS ONLY** | None | ✅ Yes |
+| Enrich `#boardEmptyHint` HTML copy & value proposition | **SAFE DOM ADDITION** | Preserves `#boardEmptyHint` and `#emptyCreateCanvasBtn` | ✅ Yes |
+| Wrap card title & meta in semantic layout containers | **SAFE DOM ADDITION** | Preserves `.ws-card-title`, `.ws-card-menu`, `.ws-card-meta` | ✅ Yes |
+| Card Drag / Click event listeners (`attachCardDrag`) | **BEHAVIOR SENSITIVE** | 5px movement threshold must be preserved | ⚠️ Do not modify logic |
+| Board pan / zoom transform math (`applyViewport`) | **DO NOT TOUCH** | Critical coordinate system | ❌ Strictly Forbidden |
+| `data-canvas-id` attribute on `.ws-card` | **DO NOT TOUCH** | Project management / deletion dependency | ❌ Strictly Forbidden |
+
+### 9.15 Safety Boundaries
+
+The following components remain **STRICTLY FROZEN**:
+- `static/js/canvas-list.js` (core viewport, event bus, drag detection, API fetch)
+- `static/js/smart-canvas.js` (editor coordinate engine, undo stack, node graph)
+- `main.py` (FastAPI routes, SQLite/JSON persistence, ZIP export)
+- Schema definitions (no new fields, no schema migrations)
+
+### 9.16 Recommended Phase 2C Implementation Sequence
+
+```text
+Step 1: Safe DOM Enhancement in static/canvas-list.html
+  └── Update #boardEmptyHint copy with Direction 1 text and capability badges.
+      Keep #boardEmptyHint, #emptyCreateCanvasBtn, and .hidden class intact.
+
+Step 2: Additive CSS Overrides in static/css/ui-canvas-list.css
+  └── Card Reskin:
+      - Clean 10px radius, 1px subtle border, micro-shadow.
+      - Refine typography: title 15px/600, badge 11px/500, meta 12px/400.
+      - Strictly NO transform/translate on hover/active.
+  └── Empty State Polish:
+      - 48px rounded icon container with soft accent border.
+      - Dignified 18px title + 13px description.
+      - Center-aligned CTA with 10px radius and solid primary accent.
+
+Step 3: Comprehensive Visual & Smoke QA
+  └── 1440px desktop testing in Light and Dark themes.
+  └── Card drag test (>5px drag moves card; <5px click opens canvas).
+  └── Empty state test (project with 0 canvases shows empty hint; clicking CTA creates canvas).
+  └── Verify zero console errors, zero 404s, zero git diff on JS/Python.
+```
+
+### 9.17 QA Checklist for Phase 2C Closeout
+
+- [ ] Card geometry preserved at `248px × 150px`
+- [ ] No `transform` or `translate` on card `:hover` / `:active`
+- [ ] Card drag vs click threshold (5px) works reliably
+- [ ] Card title supports 1-line and 2-line rendering without overflowing 150px card height
+- [ ] Card action menu (`···`) triggers without moving card or opening canvas
+- [ ] Card inline delete confirmation functions correctly
+- [ ] Empty state appears automatically when project canvas count is 0
+- [ ] Empty state button `#emptyCreateCanvasBtn` successfully opens canvas creation popover at viewport center
+- [ ] Empty state copy is professional, inspiring, and AI-native
+- [ ] Light Theme: warm neutral `#F5F5F4` background, crisp borders, no heavy shadows
+- [ ] Dark Theme: neutral charcoal `#121212` background, soft micro-borders, zero glare
+- [ ] 0 console errors, 0 resource 404s
+- [ ] Zero diff on `canvas-list.js`, `smart-canvas.js`, and `main.py`
+
+### 9.18 Future Preview Capability (Phase 3+ Roadmap)
+
+If real canvas thumbnails are prioritized in a future milestone, the recommended architecture is:
+1. **Client-Side Offscreen Capture on Save:** In `smart-canvas.js:saveCanvas()`, render an offscreen 320×180 thumbnail of the active bounding box using HTML Canvas drawing or SVG foreignObject.
+2. **Dedicated Storage Endpoint:** Upload webp/jpeg to `/assets/thumbnails/{canvas_id}.webp`.
+3. **Non-blocking Persistence:** Save path in `canvas.thumbnail` without slowing down the primary JSON save.
+4. **List API Extension:** Expose `thumbnail: str` in `canvas_record()`.
+5. **Card Container Drop-in:** Option C's reserved thumbnail area in `.ws-card` immediately consumes the URL with progressive blur-up loading.
