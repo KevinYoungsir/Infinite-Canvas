@@ -4928,6 +4928,15 @@ function syncComposerTemplateButton(){
     composerTemplateBtn.classList.toggle('active', active);
     composerTemplateBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
 }
+function syncPromptTemplateButtons(){
+    const activeNodeId = activePromptTemplateNodeId();
+    world.querySelectorAll('.prompt-preset-edit').forEach(button => {
+        const active = button.closest('.image-node')?.dataset.id === activeNodeId;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    syncComposerTemplateButton();
+}
 async function openPromptTemplatePanel(nodeId='', templateId='', options={}){
     if(!promptTemplatePanel) return;
     const target = options.target === 'composer' ? 'composer' : 'node';
@@ -4947,14 +4956,16 @@ async function openPromptTemplatePanel(nodeId='', templateId='', options={}){
         selectedIds = [];
         selectedImage = {nodeId:'', index:-1};
     }
-    render();
-    syncComposerTemplateButton();
+    syncSelectionUi();
+    updateComposer();
+    syncPromptTemplateButtons();
     promptTemplateSearch?.focus();
 }
 function closePromptTemplatePanel(){
     promptTemplatePanel?.classList.remove('open');
-    syncComposerTemplateButton();
-    render();
+    // The floating panel only changes chrome state. Rebuilding every node
+    // here would remount fallback videos on every document click.
+    syncPromptTemplateButtons();
 }
 function applyPromptTemplateToNode(mode='positive'){
     const template = promptTemplateItems().find(item => item.id === promptTemplateSelectedId);
@@ -9799,7 +9810,11 @@ function bindNodeEvents(){
                 updateComposer();
                 return;
             }
-            render();
+            // Selection is UI-only state. Re-rendering here reparents live media and
+            // makes Chromium briefly drop the current video frame on every node click.
+            syncSelectionUi();
+            updateComposer();
+            refreshRunTimerPills();
         };
         if(nodeForControls?.type !== 'smart-group') el.ondblclick = e => e.stopPropagation();
         const nodeDrop = el.querySelector('.node-drop');
@@ -17600,7 +17615,8 @@ function finishSelection(event){
     selectionState = null;
     selectionJustFinished = true;
     selectionBox.style.display = 'none';
-    render();
+    syncSelectionUi();
+    updateComposer();
     setTimeout(() => { selectionJustFinished = false; }, 0);
 }
 function createSmartGroupFromNodes(nodesToGroup, options={}){
@@ -17941,7 +17957,9 @@ shell.onclick = e => {
     if(document.getElementById('imageEditModal')?.classList.contains('open')) return;
     closeCreateMenu();
     clearSelection();
-    render();
+    // Clearing selection must not rebuild or reparent mounted media elements.
+    syncSelectionUi();
+    updateComposer();
 };
 minimap?.addEventListener('mousedown', e => {
     if(e.button !== 0) return;
@@ -18335,7 +18353,9 @@ window.onmouseup = e => {
             commitPendingUndo();
         } else { discardPendingUndo(); }
         resizeState = null;
-        if(changed) render();
+        // The node and its media are resized in place during mousemove. A
+        // full render here is redundant and remounts every playing video.
+        if(changed) syncSelectionUi();
         scheduleSave();
     }
     if(llmInstructionResizeState){
