@@ -450,8 +450,8 @@ An exhaustive audit of `canvas-list.html`, `canvas-list.js`, `canvas-list.css`, 
 Each item returned by `GET /api/canvases` conforms to `canvas_record()` (`main.py:3925`):
 ```json
 {
-  "id": "a6f87097459a4a63b90513a3747a3aad",
-  "title": "PY",
+  "id": "qa-canvas-example",
+  "title": "Phase 2C QA Canvas",
   "icon": "🧩",
   "kind": "smart",
   "owner": "",
@@ -460,8 +460,8 @@ Each item returned by `GET /api/canvases` conforms to `canvas_record()` (`main.p
   "project": "default",
   "board_x": 40.0,
   "board_y": 40.0,
-  "created_at": 1787640364934,
-  "updated_at": 1788501060000,
+  "created_at": "<qa-timestamp>",
+  "updated_at": "<qa-timestamp>",
   "deleted_at": 0,
   "node_count": 19
 }
