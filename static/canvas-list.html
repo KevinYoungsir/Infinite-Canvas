@@ -21,10 +21,10 @@
     <script src="/static/js/theme.js?v=2026.08.04.1785858497"></script>
     <script src="/static/js/touch-mouse.js?v=2026.08.04.1785858497"></script>
     <script src="/static/js/i18n.js?v=2026.08.04.1785858497"></script>
-    <link rel="stylesheet" href="/static/css/canvas-list.css?v=2026.08.04.1785858497">
+    <link rel="stylesheet" href="/static/css/canvas-list.css?v=2026.08.04.1788512039">
     <link rel="stylesheet" href="/static/css/theme.css?v=2026.08.04.1785858497">
-    <link rel="stylesheet" href="/static/css/ui-foundation.css">
-    <link rel="stylesheet" href="/static/css/ui-canvas-list.css">
+    <link rel="stylesheet" href="/static/css/ui-foundation.css?v=2026.08.04.1788425680">
+    <link rel="stylesheet" href="/static/css/ui-canvas-list.css?v=2026.08.04.1788512040">
 </head>
 <body>
     <div id="workspace" class="workspace">
@@ -69,12 +69,17 @@
             <!-- Board (pan/zoom) -->
             <div id="board" class="ws-board">
                 <div id="boardWorld" class="ws-board-world"></div>
-                <div id="boardEmptyHint" class="ws-board-empty">
-                    <div class="ws-board-empty-icon"><i data-lucide="mouse-pointer-click" class="w-7 h-7"></i></div>
-                    <div class="ws-board-empty-text">暂无画布</div>
-                    <div class="ws-board-empty-sub">为当前项目创建第一块画布</div>
+                <div id="boardEmptyHint" class="ws-board-empty hidden">
+                    <div class="ws-board-empty-icon" aria-hidden="true"><i data-lucide="sparkles" class="w-6 h-6"></i></div>
+                    <div class="ws-board-empty-text">开启第一块无限画布</div>
+                    <div class="ws-board-empty-sub">在一个无边界工作台中自由编排灵感、生成多模态内容并连接 AI 工作流。</div>
+                    <div class="ws-board-empty-capabilities" aria-label="画布能力">
+                        <span class="ws-board-empty-capability"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i><span>生成</span></span>
+                        <span class="ws-board-empty-capability"><i data-lucide="waypoints" class="w-3.5 h-3.5"></i><span>连接</span></span>
+                        <span class="ws-board-empty-capability"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i><span>无限</span></span>
+                    </div>
                     <div class="ws-board-empty-actions">
-                        <button id="emptyCreateCanvasBtn" class="ws-primary-btn" type="button"><i data-lucide="plus" class="w-4 h-4"></i><span>新建画布</span></button>
+                        <button id="emptyCreateCanvasBtn" class="ws-primary-btn" type="button"><i data-lucide="plus" class="w-4 h-4"></i><span>新建智能画布</span></button>
                     </div>
                 </div>
             </div>

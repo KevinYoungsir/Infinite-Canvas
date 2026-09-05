@@ -164,11 +164,11 @@ html[data-studio-scale="off"].studio-scale-managed .workspace {
     gap:12px;
     cursor:pointer;
     overflow:hidden;
-    transition:box-shadow .16s var(--ease), border-color .16s var(--ease), transform .16s var(--ease), background .16s var(--ease);
+    transition:box-shadow .16s var(--ease), border-color .16s var(--ease), background .16s var(--ease);
 }
 .ws-card::before { display:none; }
-.ws-card:hover { border-color:var(--line-2); box-shadow:0 16px 36px var(--shadow-strong); transform:translateY(-2px); }
-.ws-card.dragging { box-shadow:0 20px 48px var(--shadow-strong); border-color:var(--line-2); transform:none; z-index:50; cursor:grabbing; transition:none; }
+.ws-card:hover { border-color:var(--line-2); box-shadow:0 16px 36px var(--shadow-strong); }
+.ws-card.dragging { box-shadow:0 20px 48px var(--shadow-strong); border-color:var(--line-2); z-index:50; cursor:grabbing; transition:none; }
 .ws-card.cc-marked { border-color:var(--line-2); }
 .ws-card.cut { opacity:.56; border-style:dashed; }
 .ws-card-top { display:flex; align-items:center; gap:8px; min-height:28px; flex:0 0 auto; min-width:0; white-space:nowrap; overflow:hidden; }

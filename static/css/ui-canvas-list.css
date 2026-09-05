@@ -323,24 +323,65 @@ body {
     box-shadow: var(--ui-focus-ring);
 }
 
-/* Frozen card system: token normalization only, no geometry or transform. */
+/* Phase 2C — metadata-driven canvas entry cards. */
 .ws-card {
     color: var(--ui-text-primary);
     background: var(--ui-bg-surface);
     border-color: var(--ui-border-default);
+    border-radius: var(--ui-radius-md);
     box-shadow: var(--ui-shadow-xs);
+    transition:
+        color var(--ui-duration-fast) var(--ui-ease-standard),
+        background var(--ui-duration-fast) var(--ui-ease-standard),
+        border-color var(--ui-duration-fast) var(--ui-ease-standard),
+        box-shadow var(--ui-duration-fast) var(--ui-ease-standard),
+        opacity var(--ui-duration-fast) var(--ui-ease-standard);
 }
 
 .ws-card:hover {
+    background: var(--ui-bg-surface-raised);
     border-color: var(--ui-border-strong);
     box-shadow: var(--ui-shadow-md);
 }
 
-.ws-card.cc-marked {
-    border-color: var(--ui-border-strong);
+.ws-card:active {
+    background: var(--ui-bg-active);
+    box-shadow: var(--ui-shadow-xs);
 }
 
-.ws-card-kind,
+.ws-card:focus-visible,
+.ws-card:focus-within {
+    outline: none;
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-focus-ring), var(--ui-shadow-sm);
+}
+
+.ws-card.selected,
+.ws-card[aria-selected="true"] {
+    outline: 2px solid var(--ui-border-focus);
+    outline-offset: 2px;
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-shadow-sm);
+}
+
+.ws-card.dragging {
+    opacity: .92;
+    background: var(--ui-bg-surface-raised);
+    border-color: var(--ui-border-strong);
+    box-shadow: var(--ui-shadow-floating);
+}
+
+.ws-card.cc-marked {
+    border-color: var(--ui-border-default);
+    border-left: 3px solid var(--ui-accent);
+}
+
+.ws-card.confirming-delete {
+    background: var(--ui-bg-surface-raised);
+    border-color: var(--ui-danger);
+    box-shadow: var(--ui-shadow-sm);
+}
+
 .ws-card-title,
 .ws-card-title-input {
     font-weight: var(--ui-weight-semibold);
@@ -349,6 +390,25 @@ body {
 .ws-card-title,
 .ws-card-title-input {
     color: var(--ui-text-primary);
+    font-size: var(--ui-text-lg);
+    line-height: 1.35;
+    letter-spacing: -.01em;
+}
+
+.ws-card-kind {
+    color: var(--ui-text-secondary);
+    background: var(--ui-accent-soft);
+    border-color: var(--ui-border-subtle);
+    font-size: var(--ui-text-xs);
+    font-weight: var(--ui-weight-medium);
+    letter-spacing: .01em;
+}
+
+.ws-card-kind.smart,
+.theme-dark .ws-card-kind.smart {
+    color: var(--ui-text-primary);
+    background: var(--ui-accent-soft);
+    border-color: var(--ui-border-subtle);
 }
 
 .ws-card-kind.classic,
@@ -360,12 +420,27 @@ body {
 
 .ws-card-time,
 .ws-card-nodes {
-    color: var(--ui-text-tertiary);
+    font-size: var(--ui-text-xs);
     font-weight: var(--ui-weight-normal);
+}
+
+.ws-card-nodes {
+    color: var(--ui-text-secondary);
+}
+
+.ws-card-time {
+    color: var(--ui-text-tertiary);
 }
 
 .ws-card-menu {
     color: var(--ui-text-tertiary);
+    opacity: .44;
+}
+
+.ws-card:hover .ws-card-menu,
+.ws-card:focus-within .ws-card-menu,
+.ws-card-menu:focus-visible {
+    opacity: 1;
 }
 
 .ws-card-menu:hover {
@@ -374,26 +449,71 @@ body {
     border-color: var(--ui-border-subtle);
 }
 
-/* Empty-state shell remains structurally frozen in Phase 2B. */
+/* Phase 2C — first-run guidance. */
 .ws-board-empty {
     color: var(--ui-text-tertiary);
+    width: min(440px, calc(100% - 48px));
+    gap: var(--ui-space-3);
+    text-align: center;
 }
 
 .ws-board-empty-icon {
-    color: var(--ui-text-secondary);
+    width: 48px;
+    height: 48px;
+    color: var(--ui-text-primary);
     background: var(--ui-bg-surface);
     border-color: var(--ui-border-default);
-    box-shadow: var(--ui-shadow-sm);
+    border-radius: var(--ui-radius-lg);
+    box-shadow: var(--ui-shadow-xs);
 }
 
 .ws-board-empty-text {
     color: var(--ui-text-primary);
+    font-size: var(--ui-text-xl);
     font-weight: var(--ui-weight-semibold);
+    line-height: 1.35;
+    letter-spacing: -.01em;
 }
 
 .ws-board-empty-sub {
+    max-width: 400px;
+    margin-top: calc(var(--ui-space-1) * -1);
     color: var(--ui-text-secondary);
+    font-size: var(--ui-text-md);
     font-weight: var(--ui-weight-normal);
+    line-height: 1.7;
+}
+
+.ws-board-empty-capabilities {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: var(--ui-space-2);
+}
+
+.ws-board-empty-capability {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ui-space-1);
+    height: 26px;
+    padding: 0 var(--ui-space-2);
+    color: var(--ui-text-tertiary);
+    background: var(--ui-bg-soft);
+    border: 1px solid var(--ui-border-subtle);
+    border-radius: var(--ui-radius-pill);
+    font-size: var(--ui-text-xs);
+    font-weight: var(--ui-weight-normal);
+}
+
+.ws-board-empty-actions {
+    margin-top: var(--ui-space-1);
+}
+
+.ws-board-empty-actions .ws-primary-btn {
+    height: 40px;
+    padding: 0 var(--ui-space-5);
+    border-radius: var(--ui-radius-md);
 }
 
 /* Floating surfaces */
